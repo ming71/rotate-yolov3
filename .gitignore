@@ -1,0 +1,35 @@
+*.pt
+*.pth
+
+__pycache__/
+*.py[cod]
+
+/dataset/
+/runs/
+/data/samples/
+/data/train/
+/data/test/
+/backup/
+/output/
+/weights/
+/utils/kmeans/
+
+# C extensions
+*.so
+*.o
+
+# Distribution / packaging
+.Python
+build/
+lib/
+lib64/
+
+
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# custom
+*.pkl
+*.pkl.json
+*.log.json
