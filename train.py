@@ -18,41 +18,12 @@ try:  # Mixed precision training https://github.com/NVIDIA/apex
     from apex import amp
 except:
     mixed_precision = False  # not installed
-# mixed_precision = False
 
 wdir = 'weights' + os.sep  # weights dir
 last = wdir + 'last.pt'
 best = wdir + 'best.pt'
 results_file = 'results.txt'
 
-# Hyperparameters (j-series, 50.5 mAP yolov3-320) evolved by @ktian08 https://github.com/ultralytics/yolov3/issues/310
-hyp = {'giou': 0.1,  # giou loss gain 1.582
-       'cls': 27.76,  # cls loss gain  (CE=~1.0, uCE=~20)
-       'cls_pw': 1.446,  # cls BCELoss positive_weight
-       'obj': 20.35,  # obj loss gain (*=80 for uBCE with 80 classes)
-       'obj_pw': 3.941,  # obj BCELoss positive_weight
-       'iou_t': 0.5,  # iou training threshold
-       'ang_t': 3.1415926*0.4, # reg range:+-10
-       'reg': 1.0,
-    #    'lr0': 0.00
-    # 2324,  # initial learning rate (SGD=1E-3, Adam=9E-5)
-       'lr0': 0.00001,
-       'lrf': -4.,  # final LambdaLR learning rate = lr0 * (10 ** lrf)
-       'momentum': 0.97,  # SGD momentum
-       'weight_decay': 0.0004569,  # optimizer weight decay
-       'fl_gamma': 0.5,  # focal loss gamma
-       'hsv_s': 0.5703,  # image HSV-Saturation augmentation (fraction)
-       'hsv_v': 0.3174,  # image HSV-Value augmentation (fraction)
-       'degrees': 30,  # image rotation (+/- deg)
-       'translate': 0.06797,  # image translation (+/- fraction)
-       'scale': 0.1059,  # image scale (+/- gain)
-       'shear': 0.5768}  # image shear (+/- deg)
-
-# Overwrite hyp with hyp*.txt (optional)
-f = glob.glob('hyp*.txt')
-if f:
-    for k, v in zip(hyp.keys(), np.loadtxt(f[0])):
-        hyp[k] = v
 
 
 def train():
@@ -164,12 +135,12 @@ def train():
     # scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=range(59, 70, 1), gamma=0.8)  # gradual fall to 0.1*lr0
     # scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[round(opt.epochs * x) for x in [0.8, 0.9]], gamma=0.1)
     scheduler_cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs)
-    scheduler = GradualWarmupScheduler(optimizer, multiplier=8, total_epoch=10, after_scheduler=scheduler_cosine)
+    scheduler = GradualWarmupScheduler(optimizer, multiplier=hyp['multiplier'], total_epoch=10, after_scheduler=scheduler_cosine)
     scheduler.last_epoch = start_epoch - 1
 
     # # # Plot lr schedule
     # scheduler_cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs)
-    # scheduler_warmup = GradualWarmupScheduler(optimizer, multiplier=8, total_epoch=10, after_scheduler=scheduler_cosine)
+    # scheduler_warmup = GradualWarmupScheduler(optimizer, multiplier=hyp['multiplier'], total_epoch=10, after_scheduler=scheduler_cosine)
     # y = []
     # for _ in range(epochs):
     #     scheduler_warmup.step()
@@ -197,7 +168,7 @@ def train():
     dataset = LoadImagesAndLabels(train_path,
                                   img_size,
                                   batch_size,
-                                  augment=False,
+                                  augment=True,
                                   hyp=hyp,  # augmentation hyperparameters
                                   rect=opt.rect,  # rectangular training
                                   image_weights=opt.img_weights,
@@ -326,12 +297,13 @@ def train():
             # Calculate mAP (always test final epoch, skip first 10 if opt.nosave)
             if not (opt.notest or (opt.nosave and epoch < 10)) or final_epoch:
                 with torch.no_grad():
-                    if epoch%20==0 and epoch!=0:
+                    if epoch%1==0 and epoch!=0:
                         results, maps = test.test(cfg,
                                                 data,
                                                 batch_size=8,
                                                 img_size=opt.img_size,
                                                 model=model,
+                                                hyp=hyp,
                                                 conf_thres=0.001 if final_epoch and epoch > 0 else 0.1,  # 0.1 for speed
                                                 save_json=final_epoch and epoch > 0 and 'coco.data' in data)
             # Write epoch results
@@ -391,13 +363,14 @@ def train():
     torch.cuda.empty_cache()
     return results
 
- 
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--epochs', type=int, default=500)  # 500200 batches at bs 16, 117263 images = 273 epochs
-    parser.add_argument('--batch-size', type=int, default=4)  # effective bs = batch_size * accumulate = 16 * 4 = 64
+    parser.add_argument('--epochs', type=int, default=1200)  # 500200 batches at bs 16, 117263 images = 273 epochs
+    parser.add_argument('--batch-size', type=int, default=8)  # effective bs = batch_size * accumulate = 16 * 4 = 64
     parser.add_argument('--accumulate', type=int, default=4, help='batches to accumulate before optimizing')
-    parser.add_argument('--cfg', type=str, default='cfg/yolov3-m.cfg', help='cfg file path')
+    parser.add_argument('--cfg', type=str, default='cfg/yolov3.cfg', help='cfg file path')
+    parser.add_argument('--hyp', type=str, default='cfg/hyp.py', help='hyper-parameter path')
     parser.add_argument('--data', type=str, default='data/voc.data', help='*.data file path')
     parser.add_argument('--multi-scale', action='store_true', help='adjust (67% - 150%) img_size every 10 batches')
     parser.add_argument('--img-size', type=int, default=416, help='inference size (pixels)')
@@ -421,6 +394,8 @@ if __name__ == '__main__':
     opt.weights = last if opt.resume else opt.weights
     print(opt)
     device = torch_utils.select_device(opt.device, apex=mixed_precision)
+
+    hyp = hyp_parse(opt.hyp)
 
     tb_writer = None
     if opt.prebias:

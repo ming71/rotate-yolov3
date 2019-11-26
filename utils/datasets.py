@@ -15,8 +15,9 @@ import torch
 from PIL import Image, ExifTags
 from torch.utils.data import Dataset
 from tqdm import tqdm
+import imgaug.augmenters as iaa
 
-from utils.utils import xyxy2xywh, xywh2xyxy
+from utils.utils import xyxy2xywh, xywh2xyxy, get_rotated_coors
 
 # 支持的图片和视频类型
 img_formats = ['.bmp', '.jpg', '.jpeg', '.png', '.tif'] 
@@ -257,7 +258,7 @@ class LoadStreams:  # multiple IP or RTSP cameras
 
 # 注意继承自Dataset类,才能直接使用dataloader
 class LoadImagesAndLabels(Dataset):  # for training/testing
-    def __init__(self, path, img_size=416, batch_size=16, augment=False, hyp=None, rect=False, image_weights=False,
+    def __init__(self, path, img_size=416, batch_size=16, augment=True, hyp=None, rect=False, image_weights=False,
                  cache_labels=False, cache_images=False):
         path = str(Path(path))  # os-agnostic  train.txt绝对路径
         with open(path, 'r') as f:
@@ -474,36 +475,33 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                     x = np.array([x.split() for x in f.read().splitlines()], dtype=np.float32)
 
             if x.size > 0:
-                # Normalized xywha to pixel xyxyxyxy format
-                # 为了便于augment； 只是将水平bbox的表示变了，不改变绝对的gt bbox；随时可以改回来
+                # 不只是简单的回到原图，还进行了padding，使得label和416的padding  img可以适配
                 labels = x.copy()   # c x y w h a
-                labels[:, 1] = ratiow * w * (x[:, 1] - x[:, 3] / 2) + padw
-                labels[:, 2] = ratioh * h * (x[:, 2] - x[:, 4] / 2) + padh
-                labels[:, 3] = ratiow * w * (x[:, 1] + x[:, 3] / 2) + padw
-                labels[:, 4] = ratioh * h * (x[:, 2] + x[:, 4] / 2) + padh
+                labels[:, 1] = ratiow * w * labels[:, 1] + padw
+                labels[:, 2] = ratioh * h * labels[:, 2] + padh
+                labels[:, 3] = ratiow * w * labels[:, 3]
+                labels[:, 4] = ratioh * h * labels[:, 4]
                 
 
         # Augment image and labels
-        if self.augment:
+        # 仿射变换
+        if self.augment and random.random() < 1 :
             img, labels = random_affine(img, labels,
                                         degrees=hyp['degrees'],
                                         translate=hyp['translate'],
                                         scale=hyp['scale'],
                                         shear=hyp['shear'])
-
             # Cutout
             # if random.random() < 0.9:
             #     labels = cutout(img, labels)
 
         nL = len(labels)  # number of labels
         if nL:
-            # convert xyxy to xywh
-            labels[:, 1:5] = xyxy2xywh(labels[:, 1:5])
-
             # Normalize coordinates 0 - 1
             labels[:, [2, 4]] /= img.shape[0]  # height
             labels[:, [1, 3]] /= img.shape[1]  # width
 
+        # 其他数据增强
         if self.augment:
             # random left-right flip
             lr_flip = True
@@ -514,12 +512,39 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                     labels[:, 5] = -labels[:, 5]
 
             # random up-down flip
-            ud_flip = False
+            ud_flip = True
             if ud_flip and random.random() < 0.5:
                 img = np.flipud(img)
                 if nL:
                     labels[:, 2] = 1 - labels[:, 2]
                     labels[:, 5] = -labels[:, 5]
+            
+            # blur = True
+            # if blur and random.random() < 0.5:
+            #     blur_aug = iaa.GaussianBlur(sigma=(0.0,hyp['blur']))
+            #     img = blur_aug.augment_image(img)
+            
+            gamma = True
+            if gamma and random.random() < 0.5:
+                gm = random.uniform(1-hyp['gamma'],1+hyp['gamma'])
+                img = np.uint8(np.power(img/float(np.max(img)), gm)*np.max(img))
+            
+            noise = True
+            if noise and random.random() < 0.5:
+                noise_aug = iaa.AdditiveGaussianNoise(scale=(0, hyp['noise']*255))
+                img = noise_aug.augment_image(img)
+
+            sharpen = True
+            if sharpen and random.random() < 0.5:
+                sharpen_aug = iaa.Sharpen(alpha=(0.0, 1.0), lightness=(1-hyp['sharpen'],1+hyp['sharpen']))
+                img = sharpen_aug.augment_image(img)
+            
+            contrast = True
+            if sharpen and random.random() < 0.3:
+                contrast_aug = aug = iaa.contrast.LinearContrast((1-hyp['contrast'],1+hyp['contrast']))
+                img=contrast_aug.augment_image(img)
+
+
 
         labels_out = torch.zeros((nL, 7))
         if nL:
@@ -577,6 +602,7 @@ def letterbox(img, new_shape=416, color=(128, 128, 128), mode='square'):
     return img, ratiow, ratioh, dw, dh
 
 # 一次传入的是一张图像 target是xyxya的格式
+# 注意：仅支持box无形变的augment
 def random_affine(img, targets=(), degrees=10, translate=.1, scale=.1, shear=10):
     # torchvision.transforms.RandomAffine(degrees=(-10, 10), translate=(.1, .1), scale=(.9, 1.1), shear=(-10, 10))
     # https://medium.com/uruvideo/dataset-augmentation-with-random-homographies-a8f4b44830d4
@@ -590,7 +616,7 @@ def random_affine(img, targets=(), degrees=10, translate=.1, scale=.1, shear=10)
     # Rotation and Scale
     R = np.eye(3)
     a = random.uniform(-degrees, degrees)
-    # a += random.choice([-180, -90, 0, 90])  # add 90deg rotations to small rotations
+    # # # a += random.choice([-180, -90, 0, 90])  # add 90deg rotations to small rotations
     s = random.uniform(1 - scale, 1 + scale)
     R[:2] = cv2.getRotationMatrix2D(angle=a, center=(img.shape[1] / 2, img.shape[0] / 2), scale=s)
 
@@ -599,51 +625,39 @@ def random_affine(img, targets=(), degrees=10, translate=.1, scale=.1, shear=10)
     T[0, 2] = random.uniform(-translate, translate) * img.shape[0] + border  # x translation (pixels)
     T[1, 2] = random.uniform(-translate, translate) * img.shape[1] + border  # y translation (pixels)
 
-    # Shear
-    S = np.eye(3)
-    S[0, 1] = math.tan(random.uniform(-shear, shear) * math.pi / 180)  # x shear (deg)
-    S[1, 0] = math.tan(random.uniform(-shear, shear) * math.pi / 180)  # y shear (deg)
 
-    M = S @ T @ R  # Combined rotation matrix. ORDER IS IMPORTANT HERE!!
+    M =  T @ R  # Combined rotation matrix. ORDER IS IMPORTANT HERE!!
     imw = cv2.warpAffine(img, M[:2], dsize=(width, height), flags=cv2.INTER_AREA,
                          borderValue=(128, 128, 128))  # BGR order borderValue
 
     # Return warped points also
     if len(targets) > 0:
         n = targets.shape[0]
-        points = targets[:, 1:5].copy()
-        area0 = (points[:, 2] - points[:, 0]) * (points[:, 3] - points[:, 1])
 
-        # warp points
-        xy = np.ones((n * 4, 3))
-        xy[:, :2] = points[:, [0, 1, 2, 3, 0, 3, 2, 1]].reshape(n * 4, 2)  # x1y1, x2y2, x1y2, x2y1
-        xy = (xy @ M.T)[:, :2].reshape(n, 8)
+        targets[:,5]-=a/180*math.pi # 逆时针
+        targets[:,5][targets[:,5]> 0.5*math.pi] -= math.pi
+        targets[:,5][targets[:,5]<-0.5*math.pi] += math.pi
 
-        # create new boxes
-        x = xy[:, [0, 2, 4, 6]]
-        y = xy[:, [1, 3, 5, 7]]
-        xy = np.concatenate((x.min(1), y.min(1), x.max(1), y.max(1))).reshape(4, n).T
-
-        # # apply angle-based reduction of bounding boxes
-        # radians = a * math.pi / 180
-        # reduction = max(abs(math.sin(radians)), abs(math.cos(radians))) ** 0.5
-        # x = (xy[:, 2] + xy[:, 0]) / 2
-        # y = (xy[:, 3] + xy[:, 1]) / 2
-        # w = (xy[:, 2] - xy[:, 0]) * reduction
-        # h = (xy[:, 3] - xy[:, 1]) * reduction
-        # xy = np.concatenate((x - w / 2, y - h / 2, x + w / 2, y + h / 2)).reshape(4, n).T
+        transcx = targets[:,1] * M[0,0] + targets[:,2] * M[0,1] + M[0,2]
+        transcy = targets[:,1] * M[1,0] + targets[:,2] * M[1,1] + M[1,2]
+        targets[:,1] = transcx
+        targets[:,2] = transcy
+        targets[:,[3,4]] *= s
 
         # reject warped points outside of image
-        xy[:, [0, 2]] = xy[:, [0, 2]].clip(0, width)
-        xy[:, [1, 3]] = xy[:, [1, 3]].clip(0, height)
-        w = xy[:, 2] - xy[:, 0]
-        h = xy[:, 3] - xy[:, 1]
-        area = w * h
+        targets[:,1] = targets[:,1].clip(0, width)
+        targets[:,2] = targets[:,2].clip(0, height)
+        w = targets[:,3]
+        h = targets[:,4]
         ar = np.maximum(w / (h + 1e-16), h / (w + 1e-16))
-        i = (w > 4) & (h > 4) & (area / (area0 + 1e-16) > 0.1) & (ar < 10)
-
+        coors = torch.stack([get_rotated_coors(i) for i in torch.from_numpy(targets[:,1:])],0)
+        i = (w > 4) & \
+            (h > 4) & \
+            (ar < 15) & \
+            torch.stack([((i[::2] <img.shape[1]) * (i[::2] >0)).all() for i in coors],0).numpy() & \
+            torch.stack([((i[1::2]<img.shape[0]) * (i[1::2]>0)).all() for i in coors],0).numpy()
+       
         targets = targets[i]
-        targets[:, 1:5] = xy[i]
     return imw, targets
 
 
@@ -724,3 +738,16 @@ def create_folder(path='./new_folder'):
     if os.path.exists(path):
         shutil.rmtree(path)  # delete output folder
     os.makedirs(path)  # make new output folder
+
+
+def point_rotate(angle,x,y,centerx,centery,vis=False):
+    x = np.array(x)
+    y = np.array(y)
+    nRotatex = (x-centerx)*math.cos(angle) - (y-centery)*math.sin(angle) + centerx
+    nRotatey = (x-centerx)*math.sin(angle) + (y-centery)*math.cos(angle) + centery
+    
+    if vis:
+        plt.plot([centerx,x],[centery,y])
+        plt.plot([centerx,nRotatex],[centery,nRotatey])
+        plt.show()
+    return np.stack((nRotatex,nRotatey),-1)

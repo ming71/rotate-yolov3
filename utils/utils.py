@@ -30,6 +30,22 @@ np.set_printoptions(linewidth=320, formatter={'float_kind': '{:11.5g}'.format}) 
 cv2.setNumThreads(0)
 
 
+def hyp_parse(hyp_path):
+    hyp = {}
+    keys = [] #用来存储读取的顺序
+    with open(hyp_path,'r') as f:
+        for line in f:
+            v = line.strip().split(':')
+            try:
+                hyp[v[0]] = float(v[1].strip().split(' ')[0])
+            except:
+                hyp[v[0]] = eval(v[1].strip().split(' ')[0])
+            keys.append(v[0])
+        f.close()
+        print(hyp)
+    return hyp
+
+
 def floatn(x, n=3):  # format floats to n decimals
     return float(format(x, '.%gf' % n))
 
@@ -502,14 +518,14 @@ def build_targets(model, targets):
             # shape: [num_anchor, num_boxes],所有gt和当前yolo层上anchor的iou
 
             # Method1:计算anchor正框的iou
-            ious = torch.stack([wh_iou(x, gwha[:,:-1]) for x in anchor_vec[:,:-1]], 0) # (num_anchors,gts)-->(72,15)
+            all_ious = torch.stack([wh_iou(x, gwha[:,:-1]) for x in anchor_vec[:,:-1]], 0) # (num_anchors,gts)-->(72,15)
 
             # Method2:计算斜框的iou
             # _anchor_vec = torch.cat((ft((0,0)).repeat(len(anchor_vec),1),anchor_vec),1) # torch.Size([18, 8]) 8=xyxyxyxy
             # _tar_anchors = torch.cat((ft((0,0)).repeat(len(gwha),1),gwha),1)   #torch.Size([7, 8]) 7=len(t) in a bs
 
             # _ious = torch.stack([skew_bbox_iou(x,_tar_anchors) for x in _anchor_vec],0)  # ious.shape: (num_anchors, num_tragets) num_anchors = 36
-            # # anchor和gt的可视化，观察iou是否有误，及时调整anchor超参数
+            # anchor和gt的可视化，观察iou是否有误，及时调整anchor超参数
             # _anchors  = [get_rotated_coors(x) for x in _anchor_vec]
             # _tars = [get_rotated_coors(x) for x in _tar_anchors]
             # strides = [32,16,8]*2
@@ -533,7 +549,7 @@ def build_targets(model, targets):
 
             use_best_anchor = False
             if use_best_anchor:
-                ious, a = ious.max(0)  # best iou and anchor
+                ious, a = all_ious.max(0)  # best iou and anchor  注意：是返回每一列的最大值
             else:  # use all anchors
                 na = len(anchor_vec)  # number of anchors
                 # a是长度 num_box * na 的行向量；每num_box元素是na的index；如3anchor,num_box=2,则a=[0,0,1,1,2,2]
@@ -542,7 +558,7 @@ def build_targets(model, targets):
                 # t就是将target在num_box方向扩展na倍 [num_boxes*na，7]，7中单独每个元素取出来如t[:,-1]也是72*15拉成squence,每15个为一组
                 t = targets.repeat([na, 1]) 
                 gwha = gwha.repeat([na, 1])   # 同理将box wh也扩展na倍 [num_boxes*na,2],单个元素同上
-                ious = ious.view(-1)  # use all ious  展开成[num_boxes*na]的行向量
+                ious = all_ious.view(-1)  # use all ious  展开成[num_boxes*na]的行向量
 
 
             # reject anchors below iou_thres (OPTIONAL, increases P, lowers R)
@@ -552,7 +568,16 @@ def build_targets(model, targets):
                 j1 = ious > model.hyp['iou_t']  # iou threshold hyperparameter
                 j2 = abs(angle_offset) <  model.hyp['ang_t']  # angle threshold hyperparameter
                 j = j1 * j2
+                # if not j.reshape(all_ious.shape).max(0)[0].all():   # 存在某个gt在当前了layer没有合适的anchor，保留最大iou的anchor
+                #     # import ipdb; ipdb.set_trace()
+                #     gt_no_anchor_index = (j.reshape(all_ious.shape).max(0)[0]==False).nonzero().squeeze(-1)
+                #     max_iou_index = all_ious[:,gt_no_anchor_index].max(0)[1]  
+                #     j[gt_no_anchor_index+na * max_iou_index] = True
+                # import ipdb; ipdb.set_trace()
                 t, a, gwha = t[j], a[j], gwha[j]
+
+        if j.sum()==0:
+            print('----------------------------------------------------------------------------------')
         # Indices 这个变量只提供索引信息: b-图片index ; a-anchor索引 ; gj,gi grid cell的索引
         b, c = t[:, :2].long().t()  # target image, class 分别是图像index和类别id分离出来,便于索引
         gxy = t[:, 2:4] * ng  # grid x, y  将选出的gt box的xy缩放到当前遍历yolo层的特征图尺寸上去

@@ -1,0 +1,25 @@
+giou: 0.1       # giou loss gain 1.582
+cls: 27.76      # cls loss gain  (CE=~1.0, uCE=~20)
+cls_pw: 1.446   # cls BCELoss positive_weight
+obj: 20.35      # obj loss gain (*=80 for uBCE with 80 classes)
+obj_pw: 3.941   # obj BCELoss positive_weight
+iou_t: 0.1      # iou training threshold
+ang_t: 3.1415926/12
+reg: 1.0
+lr0: 0.00005
+multiplier:10
+lrf: -4.        # final LambdaLR learning rate = lr0 * (10 ** lrf)
+momentum: 0.97  # SGD momentum
+weight_decay: 0.0004569  # optimizer weight decay
+fl_gamma: 0.5   # focal loss gamma
+hsv_s: 0.5      # image HSV-Saturation augmentation (fraction)
+hsv_v: 0.3      # image HSV-Value augmentation (fraction)
+degrees: 5.0    # image rotation (+/- deg)
+translate: 0.1  # image translation (+/- fraction)
+scale: 0.2      # image scale (+/- gain)
+shear: 0.0
+gamma:0.3
+blur:2.0
+noise:0.02
+contrast:0.3
+sharpen:0.3
