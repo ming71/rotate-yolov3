@@ -17,7 +17,7 @@ from shapely.geometry import Polygon,MultiPoint
 from shapely.geometry import Polygon
 import re
 
-
+from utils.nms.r_nms import r_nms
 from . import torch_utils  # , google_utils
 
 matplotlib.rc('font', **{'size': 11})
@@ -35,6 +35,7 @@ def hyp_parse(hyp_path):
     keys = [] #用来存储读取的顺序
     with open(hyp_path,'r') as f:
         for line in f:
+            if line.startswith('#') or len(line.strip())==0 : continue
             v = line.strip().split(':')
             try:
                 hyp[v[0]] = float(v[1].strip().split(' ')[0])
@@ -190,9 +191,11 @@ def scale_coords(img1_shape, coords, img0_shape):
 
 def clip_coords(boxes, img_shape):
     # Clip bounding xywha bounding boxes to image shape (height, width)
-    boxes[:, [0, 2]] = boxes[:, [0, 2]].clamp(min=0, max=img_shape[1])  # clip x
-    boxes[:, [1, 3]] = boxes[:, [1, 3]].clamp(min=0, max=img_shape[0])  # clip y
-
+    coors = torch.stack([get_rotated_coors(box[:5]) for box in boxes])
+    clipx = (coors[:,::2] <img_shape[1]).all(1) # clip x
+    clipy = (coors[:,1::2]<img_shape[0]).all(1) # clip y
+    clip = clipx*clipy
+    boxes = boxes[clip]
 
 def ap_per_class(tp, conf, pred_cls, target_cls):
     """ Compute the average precision, given the recall and precision curves.
@@ -243,14 +246,13 @@ def ap_per_class(tp, conf, pred_cls, target_cls):
             ap.append(compute_ap(recall, precision))
 
             # Plot
-            # fig, ax = plt.subplots(1, 1, figsize=(4, 4))
-            # ax.plot(np.concatenate(([0.], recall)), np.concatenate(([0.], precision)))
-            # ax.set_xlabel('YOLOv3-SPP')
-            # ax.set_xlabel('Recall')
-            # ax.set_ylabel('Precision')
-            # ax.set_xlim(0, 1)
-            # fig.tight_layout()
-            # fig.savefig('PR_curve.png', dpi=300)
+            fig, ax = plt.subplots(1, 1, figsize=(4, 4))
+            ax.plot(np.concatenate(([0.], recall)), np.concatenate(([0.], precision)))
+            ax.set_xlabel('Recall')
+            ax.set_ylabel('Precision')
+            ax.set_xlim(0, 1)
+            fig.tight_layout()
+            fig.savefig('PR_curve.png', dpi=300)
 
     # Compute F1 score (harmonic mean of precision and recall)
     p, r, ap = np.array(p), np.array(r), np.array(ap)
@@ -383,14 +385,14 @@ class FocalLoss(nn.Module):
 
 
 # targets 是[num_boxes,7](当前batch的)的gt张量
-def compute_loss(p, targets, model):  # predictions, targets, model
+def compute_loss(p, targets, model, hyp):  # predictions, targets, model
     ft = torch.cuda.FloatTensor if p[0].is_cuda else torch.Tensor
     # lerg的定位损失包括giou和角度回归两部分
     lcls, liou, lobj, lreg = ft([0]), ft([0]), ft([0]), ft([0])
     # build_targets 完成了两件事：
     # - 将target标注缩放放到三个yolo层上
     # - 选出各个yolo层上和label box iou较大的anchor将其输出（通过indices），用于回归/计算loss
-    tcls, tbox, indices, anchor_vec = build_targets(model, targets) # 参数含义参见build_targets的说明,参数长度均为3(yolo层的个数)
+    tcls, tbox, indices, anchor_vec = build_targets(model, targets, hyp) # 参数含义参见build_targets的说明,参数长度均为3(yolo层的个数)
     h = model.hyp  # hyperparameters
     arc = model.arc  # # (default, uCE, uBCE) detection architectures
 
@@ -451,9 +453,9 @@ def compute_loss(p, targets, model):  # predictions, targets, model
             if 'default' in arc and model.nc > 1:  # cls loss (only if multiple classes)
                 # t是类别的gt,下面根据target设置分类得分的gt mask 然后和forward的对应结果计算cls loss
                 t = torch.zeros_like(ps[:, 6:])  # targets classes得分 [num_box,cls]
-                t[range(nb), tcls[i]] = 1.0 # gt的位置得分是1
-                lcls += BCEcls(ps[:, 5:], t)  # BCE
-                # lcls += CE(ps[:, 5:], tcls[i])  # CE
+                t[range(nb), tcls[i]] = 1.0          # gt的位置得分是1
+                lcls += BCEcls(ps[:, 5:], t)     # BCE
+                # lcls += CE(ps[:, 5:], tcls[i]) # CE
 
                 # Instance-class weighting (use with reduction='none')
                 # nt = t.sum(0) + 1  # number of targets per class
@@ -495,7 +497,7 @@ def compute_loss(p, targets, model):  # predictions, targets, model
 #     - av        anchor的选择,对哪个gt用哪几个的anchor
 # 以上输出都是list,len是yolo层的个数
 # build的用处：选取yolo层上对应的anchor和gxy位置，这些位置计算gt的缩放真值并返回；在计算loss时只用这几个gt，所以相当于指定这些位置的anchor向gt回归
-def build_targets(model, targets):
+def build_targets(model, targets, hyp):
     # targets = [image, class, x, y, w, h, a]
     nt = len(targets)
     tcls, tbox, indices, av = [], [], [], []
@@ -511,6 +513,9 @@ def build_targets(model, targets):
             ng, anchor_vec = model.module_list[i].ng, model.module_list[i].anchor_vec
 
         # iou of targets-anchors
+        targets[:,4] += targets[:,5]*(hyp['context_factor']-1)
+        targets[:,5] *= hyp['context_factor']
+
         t, a = targets, []
         gwha = t[:, 4:7].clone() # 注意深拷贝！
         gwha[:,:-1] *= ng        # 缩放到当前yolo层尺寸上
@@ -576,8 +581,7 @@ def build_targets(model, targets):
                 # import ipdb; ipdb.set_trace()
                 t, a, gwha = t[j], a[j], gwha[j]
 
-        if j.sum()==0:
-            print('----------------------------------------------------------------------------------')
+        
         # Indices 这个变量只提供索引信息: b-图片index ; a-anchor索引 ; gj,gi grid cell的索引
         b, c = t[:, :2].long().t()  # target image, class 分别是图像index和类别id分离出来,便于索引
         gxy = t[:, 2:4] * ng  # grid x, y  将选出的gt box的xy缩放到当前遍历yolo层的特征图尺寸上去
@@ -585,7 +589,7 @@ def build_targets(model, targets):
         indices.append((b, a, gj, gi))
 
 
-        # GIoU
+        # GIoU   
         gxy -= gxy.floor()  # xy  # 在一个grid cell内的坐标(即原坐标减去grid cell的位置) 
         gwha[:,:2] = torch.log(gwha[:,:2] / anchor_vec[a][:,:2]) 
         gwha[:, 2] = torch.tan(gwha[:, 2] - anchor_vec[a][:, 2])
@@ -627,7 +631,7 @@ def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.5):
         # Multiply conf by class conf to get combined confidence
         # max(1)是按照1维搜索,对每个proposal取出多分类分数,得到最大的那个值
         # 返回值class_conf和索引class_pred,索引就是类别所属
-        class_conf, class_pred = pred[:, 6:].max(1) 
+        class_conf, class_pred = pred[:, 6:].max(1)     # max(1) 是每行找最大的，即当前proposal最可能是哪个类
         pred[:, 5] *= class_conf            # 乘以conf才是真正的得分,赋值到conf的位置
 
         # Select only suitable predictions
@@ -641,81 +645,101 @@ def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.5):
             continue
 
         # Select predicted classes
-        class_conf = class_conf[i]  # bool向量筛掉False的conf(好操作666)
+        class_conf = class_conf[i]  # bool向量筛掉False的conf
         class_pred = class_pred[i].unsqueeze(1).float() # torch.Size([num_of_proposal]) --> torch.Size([num_of_proposal,1])便于后面的concat
 
-        # Detections ordered as (x1y1x2y2, obj_conf, class_conf, class_pred)
-        pred = torch.cat((pred[:, :6], class_conf.unsqueeze(1), class_pred), 1)
+        use_cuda_nms = True
+        
+        if  use_cuda_nms:
+            det_max = []
+            pred = torch.cat((pred[:, :6], class_conf.unsqueeze(1), class_pred), 1)
+            pred = pred[(-pred[:, 5]).argsort()]
+            for c in pred[:, -1].unique():
+                dc = pred[pred[:, -1] == c]
+                dc = dc[(-dc[:, 5]).argsort()]
+                if len(dc)>100:
+                    dc = dc[:100]
+                # Non-maximum suppression
+                inds = r_nms(dc[:,:6], nms_thres)
+                det_max.append(dc[inds])
+            if len(det_max):
+                det_max = torch.cat(det_max)  # concatenate
+                output[image_i] = det_max[(-det_max[:, 5]).argsort()]  # sort
 
-        # Get detections sorted by decreasing confidence scores
-        pred = pred[(-pred[:, 5]).argsort()]
+        else:
+            # Detections ordered as (x1y1x2y2, obj_conf, class_conf, class_pred)
+            pred = torch.cat((pred[:, :6], class_conf.unsqueeze(1), class_pred), 1)
 
-        det_max = []
-        nms_style = 'OR'  # 'OR' (default), 'AND', 'MERGE' (experimental)
+            # Get detections sorted by decreasing confidence scores
+            pred = pred[(-pred[:, 5]).argsort()]
 
-        for c in pred[:, -1].unique():
-            dc = pred[pred[:, -1] == c]  # select class c #  shape [num,7]  7 = (x1, y1, x2, y2, object_conf, class_conf)
-            n = len(dc)
-            if n == 1:
-                det_max.append(dc)  # No NMS required if only 1 prediction
-                continue
-            elif n > 100:
-                dc = dc[:100]  # limit to first 100 boxes: https://github.com/ultralytics/yolov3/issues/117
+            det_max = []
+            nms_style = 'OR'  # 'OR' (default), 'AND', 'MERGE' (experimental)
 
-            # Non-maximum suppression
-            if nms_style == 'OR':  # default
-                # METHOD1
-                # ind = list(range(len(dc)))
-                # while len(ind):
-                # j = ind[0]
-                # det_max.append(dc[j:j + 1])  # save highest conf detection
-                # reject = (skew_bbox_iou(dc[j], dc[ind]) > nms_thres).nonzero()
-                # [ind.pop(i) for i in reversed(reject)]
+            for c in pred[:, -1].unique():
+                dc = pred[pred[:, -1] == c]  # select class c #  shape [num,7]  7 = (x1, y1, x2, y2, object_conf, class_conf)
+                n = len(dc)
+                if n == 1:
+                    det_max.append(dc)  # No NMS required if only 1 prediction
+                    continue
+                elif n > 100:
+                    dc = dc[:100]  # limit to first 100 boxes: https://github.com/ultralytics/yolov3/issues/117
 
-                # METHOD2
-                while dc.shape[0]:
-                    det_max.append(dc[:1])  # save highest conf detection
-                    if len(dc) == 1:  # Stop if we're at the last detection
-                        break
-                    iou = skew_bbox_iou(dc[0], dc[1:])  # iou with other boxes
-                    dc = dc[1:][iou < nms_thres]  # remove ious > threshold
+                # Non-maximum suppression
+                if nms_style == 'OR':  # default
+                    # METHOD1
+                    # ind = list(range(len(dc)))
+                    # while len(ind):
+                    # j = ind[0]
+                    # det_max.append(dc[j:j + 1])  # save highest conf detection
+                    # reject = (skew_bbox_iou(dc[j], dc[ind]) > nms_thres).nonzero()
+                    # [ind.pop(i) for i in reversed(reject)]
 
-            elif nms_style == 'AND':  # requires overlap, single boxes erased
-                while len(dc) > 1:
-                    iou = skew_bbox_iou(dc[0], dc[1:])  # iou with other boxes
-                    if iou.max() > 0.5:
+                    # METHOD2
+                    while dc.shape[0]:
+                        det_max.append(dc[:1])  # save highest conf detection
+                        if len(dc) == 1:  # Stop if we're at the last detection
+                            break
+                        iou = skew_bbox_iou(dc[0], dc[1:])  # iou with other boxes
+                        dc = dc[1:][iou < nms_thres]  # remove ious > threshold
+
+                elif nms_style == 'AND':  # requires overlap, single boxes erased
+                    while len(dc) > 1:
+                        iou = skew_bbox_iou(dc[0], dc[1:])  # iou with other boxes
+                        if iou.max() > 0.5:
+                            det_max.append(dc[:1])
+                        dc = dc[1:][iou < nms_thres]  # remove ious > threshold
+
+                elif nms_style == 'MERGE':  # weighted mixture box
+                    while len(dc):
+                        if len(dc) == 1:
+                            det_max.append(dc)
+                            break
+                        # 有个bug:如果当前一批box中和最高conf(排序后是第一个也就是dc[0])的iou都小于nms_thres,
+                        # 那么i全为False,导致weights=[],从而weights.sum()=0导致dc[0]变成nan!
+                        i = skew_bbox_iou(dc[0], dc) > nms_thres  # iou with other boxes, 返回的也是boolean,便于后面矩阵索引和筛选
+                        weights = dc[i, 5:6]    # 大于nms阈值的重复较多的proposal,取出conf
+                        assert len(weights)>0, 'Bugs on MERGE NMS!!'
+                        dc[0, :5] = (weights * dc[i, :5]).sum(0) / weights.sum()    # 将最高conf的bbox代之为大于阈值的所有bbox加权结果(conf不变,变了也没意义)
                         det_max.append(dc[:1])
-                    dc = dc[1:][iou < nms_thres]  # remove ious > threshold
+                        dc = dc[i == 0]         # bool的false等价于0,这一步将dc中的已经计算过的predbox剔除掉
 
-            elif nms_style == 'MERGE':  # weighted mixture box
-                while len(dc):
-                    if len(dc) == 1:
-                        det_max.append(dc)
-                        break
-                    # 有个bug:如果当前一批box中和最高conf(排序后是第一个也就是dc[0])的iou都小于nms_thres,
-                    # 那么i全为False,导致weights=[],从而weights.sum()=0导致dc[0]变成nan!
-                    i = skew_bbox_iou(dc[0], dc) > nms_thres  # iou with other boxes, 返回的也是boolean,便于后面矩阵索引和筛选
-                    weights = dc[i, 5:6]    # 大于nms阈值的重复较多的proposal,取出conf
-                    assert len(weights)>0, 'Bugs on MERGE NMS!!'
-                    dc[0, :5] = (weights * dc[i, :5]).sum(0) / weights.sum()    # 将最高conf的bbox代之为大于阈值的所有bbox加权结果(conf不变,变了也没意义)
-                    det_max.append(dc[:1])
-                    dc = dc[i == 0]         # bool的false等价于0,这一步将dc中的已经计算过的predbox剔除掉
+                elif nms_style == 'SOFT':  # soft-NMS https://arxiv.org/abs/1704.04503
+                    sigma = 0.5  # soft-nms sigma parameter
+                    while len(dc):
+                        if len(dc) == 1:
+                            det_max.append(dc)
+                            break
+                        det_max.append(dc[:1])
+                        iou = skew_bbox_iou(dc[0], dc[1:])  # iou with other boxes
+                        dc = dc[1:]
+                        dc[:, 4] *= torch.exp(-iou ** 2 / sigma)  # decay confidences
+                        # dc = dc[dc[:, 4] > nms_thres]  # new line per https://github.com/ultralytics/yolov3/issues/362
 
-            elif nms_style == 'SOFT':  # soft-NMS https://arxiv.org/abs/1704.04503
-                sigma = 0.5  # soft-nms sigma parameter
-                while len(dc):
-                    if len(dc) == 1:
-                        det_max.append(dc)
-                        break
-                    det_max.append(dc[:1])
-                    iou = skew_bbox_iou(dc[0], dc[1:])  # iou with other boxes
-                    dc = dc[1:]
-                    dc[:, 4] *= torch.exp(-iou ** 2 / sigma)  # decay confidences
-                    # dc = dc[dc[:, 4] > nms_thres]  # new line per https://github.com/ultralytics/yolov3/issues/362
-
-        if len(det_max):
-            det_max = torch.cat(det_max)  # concatenate
-            output[image_i] = det_max[(-det_max[:, 4]).argsort()]  # sort
+            if len(det_max):
+                det_max = torch.cat(det_max)  # concatenate
+                import ipdb; ipdb.set_trace()
+                output[image_i] = det_max[(-det_max[:, 5]).argsort()]  # sort
             
 
     return output
@@ -885,15 +909,21 @@ def plot_images(imgs, targets, paths=None, fname='images.jpg'):
     for i in range(bs):
         img = imgs[i]
         img *= 255.0  # 从归一化的浮点数映射回原图便于opencv画多边形box（matplotlib本身可以用浮点画图）
-        img = np.ascontiguousarray(img, dtype=np.uint8)  # uint8 to float32
+        img = np.ascontiguousarray(img, dtype=np.uint8)  
         img = img.transpose(1,2,0)  # BGR to RGB, to 3x416x416
         
         boxes = xywha2coors(targets[targets[:, 0] == i, 2:7])
-        for box in boxes:
-            box[:,0]*=w; box[:,1]*=h
-            box = box.astype(np.int32)
-            r,g,b = (random.randint(0,255),random.randint(0,255),random.randint(0,255))
-            img = cv2.polylines(img,[box],True,(r,g,b),2)	
+        if len(boxes)>0:   # 不一定都有gt(增强后可能没了)
+            for box in boxes:
+                box[:,0]*=w; box[:,1]*=h
+                box = box.astype(np.int32)
+                r,g,b = (random.randint(0,255),random.randint(0,255),random.randint(0,255))
+
+                img = cv2.polylines(img,[box],True,(r,g,b),2)
+        else:
+            # cv2.imshow('p',img)
+            # cv2.waitKey(0)
+            continue
         img = img.get().astype('i')
         plt.subplot(ns, ns, i + 1).imshow(img)
         plt.axis('off')
@@ -1068,8 +1098,12 @@ def get_rotated_coors(box):
     y2 = t_x2*R[1,0] + t_y2*R[1,1] + R[1,2] 
     x3 = t_x3*R[0,0] + t_y3*R[0,1] + R[0,2] 
     y3 = t_x3*R[1,0] + t_y3*R[1,1] + R[1,2] 
-    r_box=torch.cat([x0.unsqueeze(0),y0.unsqueeze(0),
-                     x1.unsqueeze(0),y1.unsqueeze(0),
-                     x2.unsqueeze(0),y2.unsqueeze(0),
-                     x3.unsqueeze(0),y3.unsqueeze(0)], 0)
+
+    if isinstance(x0,torch.Tensor):
+        r_box=torch.cat([x0.unsqueeze(0),y0.unsqueeze(0),
+                         x1.unsqueeze(0),y1.unsqueeze(0),
+                         x2.unsqueeze(0),y2.unsqueeze(0),
+                         x3.unsqueeze(0),y3.unsqueeze(0)], 0)
+    else:
+        r_box = np.array([x0,y0,x1,y1,x2,y2,x3,y3])
     return r_box

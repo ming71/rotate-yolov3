@@ -1,12 +1,13 @@
 import argparse
 import json
+import torch
 
 from torch.utils.data import DataLoader
 
 from models import *
 from utils.datasets import *
 from utils.utils import *
-
+from utils.nms.r_nms import r_nms
 
 def test(cfg,
          data,
@@ -19,13 +20,14 @@ def test(cfg,
          save_json=False,
          hyp=None,
          model=None):
+
     # Initialize/load model and set device
     if model is None:
         device = torch_utils.select_device(opt.device)
         verbose = True
 
         # Initialize model
-        model = Darknet(cfg, img_size).to(device)
+        model = Darknet(cfg, hyp, img_size).to(device)
 
         # Load weights
         attempt_download(weights)
@@ -47,7 +49,7 @@ def test(cfg,
     names = load_classes(data['names'])  # class names
 
     # Dataloader
-    dataset = LoadImagesAndLabels(test_path, img_size, batch_size,augment=True, hyp=hyp)
+    dataset = LoadImagesAndLabels(test_path, img_size, batch_size,augment=False, hyp=hyp)
     dataloader = DataLoader(dataset,
                             batch_size=batch_size,
                             num_workers=min([os.cpu_count(), batch_size, 16]),
@@ -73,9 +75,9 @@ def test(cfg,
         # Run model
         inf_out, train_out = model(imgs)  # inference and training outputs
 
-        # Compute loss
-        if hasattr(model, 'hyp'):  # if model has loss hyperparameters
-            loss += compute_loss(train_out, targets, model)[1][:3].cpu()  # GIoU, obj, cls
+        # # Compute loss
+        # if hasattr(model, 'hyp'):  # if model has loss hyperparameters
+        #     loss += compute_loss(train_out, targets, model,hyp)[1][:3].cpu()  # GIoU, obj, cls
 
         # Run NMS
         output = non_max_suppression(inf_out, conf_thres=conf_thres, nms_thres=nms_thres)
@@ -110,7 +112,7 @@ def test(cfg,
                                   'bbox': [floatn(x, 3) for x in box[di]],
                                   'score': floatn(d[4], 5)})
 
-            # Clip boxes to image bounds
+            # Clip boxes to image bounds   
             clip_coords(pred, (height, width))
 
             # Assign all predictions as incorrect
@@ -124,7 +126,7 @@ def test(cfg,
                 tbox[:, [0, 2]] *= width
                 tbox[:, [1, 3]] *= height
 
-                # Search for correct predictions
+                # Search for correct predictions遍历每个检测出的box
                 for i, (*pbox, pconf, pcls_conf, pcls) in enumerate(pred):
 
                     # Break if all targets already located in image
@@ -199,14 +201,14 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(prog='test.py')
     parser.add_argument('--cfg', type=str, default='cfg/yolov3.cfg', help='cfg file path')
     parser.add_argument('--data', type=str, default='data/voc.data', help='coco.data file path')
-    parser.add_argument('--weights', type=str, default='weights/last.pt', help='path to weights file')
-    parser.add_argument('--batch-size', type=int, default=8, help='size of each image batch')
+    parser.add_argument('--weights', type=str, default='weights/best.pt', help='path to weights file')
+    parser.add_argument('--batch-size', type=int, default=1, help='size of each image batch')
     parser.add_argument('--img-size', type=int, default=416, help='inference size (pixels)')
     parser.add_argument('--iou-thres', type=float, default=0.5, help='iou threshold required to qualify as detected')
     parser.add_argument('--conf-thres', type=float, default=0.001, help='object confidence threshold')
     parser.add_argument('--nms-thres', type=float, default=0.5, help='iou threshold for non-maximum suppression')
-    parser.add_argument('--save-json', action='store_true', help='save a cocoapi-compatible JSON results file')
     parser.add_argument('--hyp', type=str, default='cfg/hyp.py', help='hyper-parameter path')
+    parser.add_argument('--save-json', action='store_true', help='save a cocoapi-compatible JSON results file')
     parser.add_argument('--device', default='', help='device id (i.e. 0 or 0,1) or cpu')
     opt = parser.parse_args()
     print(opt)

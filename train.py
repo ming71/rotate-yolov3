@@ -1,4 +1,5 @@
 import argparse
+import torch
 
 import torch.distributed as dist
 import torch.optim as optim
@@ -30,8 +31,8 @@ def train():
     cfg = opt.cfg
     data = opt.data
     img_size = opt.img_size
-    epochs = 1 if opt.prebias else opt.epochs  # 500200 batches at bs 64, 117263 images = 273 epochs
-    batch_size = opt.batch_size
+    epochs = 1 if opt.prebias else int(hyp['epochs'])  # 500200 batches at bs 64, 117263 images = 273 epochs
+    batch_size = int(hyp['batch_size'])
     accumulate = opt.accumulate  # effective bs = batch_size * accumulate = 16 * 4 = 64
     weights = opt.weights  # initial training weights
 
@@ -59,7 +60,7 @@ def train():
         os.remove(f)
 
     # Initialize model
-    model = Darknet(cfg, arc=opt.arc).to(device)
+    model = Darknet(cfg, hyp, arc=opt.arc).to(device)
 
     # Optimizer
     pg0, pg1 = [], []  # optimizer parameter groups
@@ -133,14 +134,21 @@ def train():
     # lf = lambda x: 1 - 10 ** (hyp['lrf'] * (1 - x / epochs))  # inverse exp ramp
     # scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lf)
     # scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=range(59, 70, 1), gamma=0.8)  # gradual fall to 0.1*lr0
-    # scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[round(opt.epochs * x) for x in [0.8, 0.9]], gamma=0.1)
-    scheduler_cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs)
-    scheduler = GradualWarmupScheduler(optimizer, multiplier=hyp['multiplier'], total_epoch=10, after_scheduler=scheduler_cosine)
+    # scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[round(epochs * x) for x in [0.8, 0.9]], gamma=0.1)
+    scheduler = lr_scheduler.CosineAnnealingLR(optimizer, epochs)
+    scheduler = GradualWarmupScheduler(optimizer, 
+                                       multiplier=hyp['multiplier'], 
+                                       total_epoch=hyp['warm_epoch'], 
+                                       after_scheduler=scheduler)
     scheduler.last_epoch = start_epoch - 1
 
     # # # Plot lr schedule
-    # scheduler_cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs)
-    # scheduler_warmup = GradualWarmupScheduler(optimizer, multiplier=hyp['multiplier'], total_epoch=10, after_scheduler=scheduler_cosine)
+    # scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[round(epochs * x) for x in [0.8, 0.9]], gamma=0.1)
+    # scheduler = lr_scheduler.CosineAnnealingLR(optimizer, epochs)
+    # scheduler_warmup = GradualWarmupScheduler(optimizer, 
+    #                                           multiplier=hyp['multiplier'], 
+    #                                           total_epoch=hyp['warm_epoch'], 
+    #                                           after_scheduler=scheduler)
     # y = []
     # for _ in range(epochs):
     #     scheduler_warmup.step()
@@ -255,7 +263,7 @@ def train():
             # Run model
             pred = model(imgs)
             # Compute loss
-            loss, loss_items = compute_loss(pred, targets, model)
+            loss, loss_items = compute_loss(pred, targets, model, hyp)
             if not torch.isfinite(loss):
                 print('WARNING: non-finite loss, ending training ', loss_items)
                 return results
@@ -297,14 +305,14 @@ def train():
             # Calculate mAP (always test final epoch, skip first 10 if opt.nosave)
             if not (opt.notest or (opt.nosave and epoch < 10)) or final_epoch:
                 with torch.no_grad():
-                    if epoch%1==0 and epoch!=0:
+                    if epoch%hyp['test_interval']==0 and epoch!=0:
                         results, maps = test.test(cfg,
                                                 data,
-                                                batch_size=8,
+                                                batch_size=1,
                                                 img_size=opt.img_size,
                                                 model=model,
                                                 hyp=hyp,
-                                                conf_thres=0.001 if final_epoch and epoch > 0 else 0.1,  # 0.1 for speed
+                                                conf_thres=0.001 if final_epoch and epoch > 0 else 0.001,  # 0.1 for speed
                                                 save_json=final_epoch and epoch > 0 and 'coco.data' in data)
             # Write epoch results
         with open(results_file, 'a') as f:
@@ -346,7 +354,7 @@ def train():
                 torch.save(chkpt, best)
 
             # Save backup every 10 epochs (optional)
-            if epoch > 0 and epoch % 100 == 0:
+            if epoch > 0 and epoch % hyp['save_interval'] == 0:
                 torch.save(chkpt, wdir + 'backup%g.pt' % epoch)
 
             # Delete checkpoint
@@ -366,10 +374,8 @@ def train():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--epochs', type=int, default=1200)  # 500200 batches at bs 16, 117263 images = 273 epochs
-    parser.add_argument('--batch-size', type=int, default=8)  # effective bs = batch_size * accumulate = 16 * 4 = 64
     parser.add_argument('--accumulate', type=int, default=4, help='batches to accumulate before optimizing')
-    parser.add_argument('--cfg', type=str, default='cfg/yolov3.cfg', help='cfg file path')
+    parser.add_argument('--cfg', type=str, default='cfg/yolov3-m.cfg', help='cfg file path')
     parser.add_argument('--hyp', type=str, default='cfg/hyp.py', help='hyper-parameter path')
     parser.add_argument('--data', type=str, default='data/voc.data', help='*.data file path')
     parser.add_argument('--multi-scale', action='store_true', help='adjust (67% - 150%) img_size every 10 batches')

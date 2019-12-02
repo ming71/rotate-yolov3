@@ -6,7 +6,7 @@ from utils.datasets import *
 from utils.utils import *
 
 
-def detect(save_txt=False, save_img=False):
+def detect(save_txt=False, save_img=False,hyp=None):
     img_size =  opt.img_size  # (320, 192) or (416, 256) or (608, 352) for (height, width)
     out, source, weights, half, view_img = opt.output, opt.source, opt.weights, opt.half, opt.view_img
     webcam = source == '0' or source.startswith('rtsp') or source.startswith('http') or source.endswith('.txt')
@@ -18,7 +18,7 @@ def detect(save_txt=False, save_img=False):
     os.makedirs(out)  # make new output folder
 
     # Initialize model
-    model = Darknet(opt.cfg, img_size)  # 搭建模型（不连接计算图），只调用构造函数
+    model = Darknet(opt.cfg, hyp, img_size )  # 搭建模型（不连接计算图），只调用构造函数
 
     # Load weights
     attempt_download(weights)  
@@ -132,8 +132,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--cfg', type=str, default='cfg/yolov3.cfg', help='cfg file path')
     parser.add_argument('--data', type=str, default='data/voc.data', help='coco.data file path')
-    parser.add_argument('--weights', type=str, default='weights/best.pt', help='path to weights file')
-    parser.add_argument('--source', type=str, default='data/test', help='source')  # input file/folder, 0 for webcam
+    parser.add_argument('--weights', type=str, default='weights/last.pt', help='path to weights file')
+    parser.add_argument('--source', type=str, default='data/all', help='source')  # input file/folder, 0 for webcam
     parser.add_argument('--output', type=str, default='output', help='output folder')  # output folder
     parser.add_argument('--img-size', type=int, default=416, help='inference size (pixels)')
     parser.add_argument('--conf-thres', type=float, default=0.5, help='object confidence threshold')
@@ -141,9 +141,12 @@ if __name__ == '__main__':
     parser.add_argument('--fourcc', type=str, default='mp4v', help='output video codec (verify ffmpeg support)')
     parser.add_argument('--half', action='store_true', help='half precision FP16 inference')
     parser.add_argument('--device', default='', help='device id (i.e. 0 or 0,1) or cpu')
+    parser.add_argument('--hyp', type=str, default='cfg/hyp.py', help='hyper-parameter path')
     parser.add_argument('--view-img', action='store_true', help='display results')
     opt = parser.parse_args()
     print(opt)
 
+    hyp = hyp_parse(opt.hyp)
+
     with torch.no_grad():
-        detect()
+        detect(hyp=hyp)

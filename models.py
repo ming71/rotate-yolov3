@@ -13,7 +13,7 @@ class EmptyLayer(nn.Module):
         return x
 
 
-def create_modules(module_defs, img_size, arc):
+def create_modules(module_defs, img_size, arc, hyp):
     # Constructs module list of layer blocks from module configuration in module_defs
 
     hyperparams = module_defs.pop(0)    # hyperparams是设置的超参数，pop出来就只剩下模型单元了
@@ -103,6 +103,7 @@ def create_modules(module_defs, img_size, arc):
             modules = YOLOLayer(anchors=mdef['anchors'][mask],  # anchor list，用mask提取特定的三个anchor尺度，eg.array([[116,90],[156,198],[373,326]])
                                 nc=int(mdef['classes']),  # number of classes,eg.20
                                 img_size=img_size,  # (416, 416)
+                                hyp = hyp,
                                 yolo_index=yolo_index,  # 0, 1 or 2三层
                                 arc=arc)  # yolo architecture
 
@@ -155,7 +156,7 @@ class Swish(nn.Module):
 
 
 class YOLOLayer(nn.Module):
-    def __init__(self, anchors, nc, img_size, yolo_index, arc): 
+    def __init__(self, anchors, nc, img_size, yolo_index, arc, hyp): 
         super(YOLOLayer, self).__init__()
         self.anchors = torch.Tensor(anchors)
         self.na = len(anchors)  # number of anchors (3)
@@ -163,6 +164,7 @@ class YOLOLayer(nn.Module):
         self.nx = 0  # initialize number of x gridpoints    
         self.ny = 0  # initialize number of y gridpoints
         self.arc = arc
+        self.hyp = hyp
 
 
     def forward(self, p, img_size, var=None):   # p是特征图，img_size是缩放并padding后的尺寸如torch.Size([320, 416])（用来确定原图和特征图的对应位置）
@@ -178,7 +180,7 @@ class YOLOLayer(nn.Module):
             # 如果是training,直接返回yolo fp (bs, anchors, grid, grid, classes + xywh)
             return p
 
-        else:  
+        else:  # 不止返回inference结果还有train的
             # inference
             # s = 1.5  # scale_xy  (pxy = pxy * s - (s - 1) / 2)
             io = p.clone()  # inference output
@@ -186,11 +188,13 @@ class YOLOLayer(nn.Module):
             io[..., 0:2] = torch.sigmoid(io[..., 0:2]) + self.grid_xy  # xy ：预测的偏移 + grid cell id
             io[..., 2:4] = torch.exp(io[..., 2:4]) * self.anchor_wh[...,:-1]    # wh yolo method （加exp化为正数）；wh预测的是一个比例，基准是anchor
             io[..., 4]   = torch.atan(io[..., 4]) + self.anchor_wh[...,-1]
-            # io[..., 4][io[..., 4] <-0.5*math.pi] += math.pi
-            # io[..., 4][io[..., 4] > 0.5*math.pi] -= math.pi
-            # io[..., 2:4] = ((torch.sigmoid(io[..., 2:4]) * 2) ** 3) * self.anchor_wh  # wh power method
             # 从特征图放大到原图尺寸
             io[..., :4] *= self.stride
+            # 整体缩放法
+            # io[..., 2:4] /= self.hyp['context_factor']    
+            # 取h短边合理缩放
+            io[..., 3] /= self.hyp['context_factor']
+            io[..., 2] -= io[..., 3]*(self.hyp['context_factor']-1)
 
             if 'default' in self.arc:  # seperate obj and cls
                 # 将obj得分和各类别的得分进行sigmoid处理
@@ -214,11 +218,12 @@ class YOLOLayer(nn.Module):
 
 class Darknet(nn.Module):
     # YOLOv3 object detection model
-    def __init__(self, cfg, img_size=(416, 416), arc='default'):
+    def __init__(self, cfg, hyp, img_size=(416, 416), arc='default'):
         super(Darknet, self).__init__()    
         self.module_defs = parse_model_cfg(cfg)     # 返回包含cfg组件dict的list便于调用
-        self.module_list, self.routes = create_modules(self.module_defs, img_size, arc)  # 搭建模型（只是堆叠没有连接，连接实现在forword，动态图）以及要融合的位置index（残差结构和多尺度concat两部分）
+        self.module_list, self.routes = create_modules(self.module_defs, img_size, arc, hyp)  # 搭建模型（只是堆叠没有连接，连接实现在forword，动态图）以及要融合的位置index（残差结构和多尺度concat两部分）
         self.yolo_layers = get_yolo_layers(self)    # yolo层的index: [82, 94, 106]
+        self.hyp = hyp
 
         # Darknet Header https://github.com/AlexeyAB/darknet/issues/2914#issuecomment-496675346
         # 关于darknet版本的问题

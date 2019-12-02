@@ -15,6 +15,7 @@ import torch
 from PIL import Image, ExifTags
 from torch.utils.data import Dataset
 from tqdm import tqdm
+from utils.augment import *
 import imgaug.augmenters as iaa
 
 from utils.utils import xyxy2xywh, xywh2xyxy, get_rotated_coors
@@ -258,7 +259,7 @@ class LoadStreams:  # multiple IP or RTSP cameras
 
 # 注意继承自Dataset类,才能直接使用dataloader
 class LoadImagesAndLabels(Dataset):  # for training/testing
-    def __init__(self, path, img_size=416, batch_size=16, augment=True, hyp=None, rect=False, image_weights=False,
+    def __init__(self, path, img_size=416, batch_size=16, augment=False, hyp=None, rect=False, image_weights=False,
                  cache_labels=False, cache_images=False):
         path = str(Path(path))  # os-agnostic  train.txt绝对路径
         with open(path, 'r') as f:
@@ -439,23 +440,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 # img按长边缩放到416,shape [h,w,c]
                 img = cv2.resize(img, (int(w * r), int(h * r)), interpolation=cv2.INTER_LINEAR)  # INTER_LINEAR fastest
 
-        # Augment colorspace
-        augment_hsv = True
 
-        if self.augment and augment_hsv:
-            # SV augmentation by 50%
-            img_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)  # hue, sat, val
-            S = img_hsv[:, :, 1].astype(np.float32)  # saturation
-            V = img_hsv[:, :, 2].astype(np.float32)  # value
-
-            a = random.uniform(-1, 1) * hyp['hsv_s'] + 1
-            b = random.uniform(-1, 1) * hyp['hsv_v'] + 1
-            S *= a
-            V *= b
-
-            img_hsv[:, :, 1] = S if a < 1 else S.clip(None, 255)
-            img_hsv[:, :, 2] = V if b < 1 else V.clip(None, 255)
-            cv2.cvtColor(img_hsv, cv2.COLOR_HSV2BGR, dst=img)
 
         # Letterbox
         h, w, _ = img.shape
@@ -481,69 +466,27 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 labels[:, 2] = ratioh * h * labels[:, 2] + padh
                 labels[:, 3] = ratiow * w * labels[:, 3]
                 labels[:, 4] = ratioh * h * labels[:, 4]
-                
 
-        # Augment image and labels
-        # 仿射变换
-        if self.augment and random.random() < 1 :
-            img, labels = random_affine(img, labels,
-                                        degrees=hyp['degrees'],
-                                        translate=hyp['translate'],
-                                        scale=hyp['scale'],
-                                        shear=hyp['shear'])
-            # Cutout
-            # if random.random() < 0.9:
-            #     labels = cutout(img, labels)
+        # 数据增强
+        if self.augment:  
+            transform = Transform([Affine( hyp['degrees'] ,hyp['translate'],hyp['scale'],hyp['shear'], p = 0.5),
+                                  Contrast(hyp['contrast'], p = 0.3),
+                                  Sharpen(hyp['contrast'], p = 0.2),
+                                  Noise(hyp['noise'], p = 0.2),
+                                  Gamma(hyp['gamma'], p = 0.4),
+                                  Blur(hyp['blur'], p = 0.5),
+                                  HSV(hyp['hsv_s'],hyp['hsv_v'], p = 0.5),
+                                  HorizontalFlip(p = 0.5),
+                                  VerticalFlip(p = 0.5),
+                                  CopyPaste(sigma = hyp['copypaste'], p=0.1)
+                                  ])
+            img, labels = transform(img, labels)
 
         nL = len(labels)  # number of labels
         if nL:
             # Normalize coordinates 0 - 1
             labels[:, [2, 4]] /= img.shape[0]  # height
             labels[:, [1, 3]] /= img.shape[1]  # width
-
-        # 其他数据增强
-        if self.augment:
-            # random left-right flip
-            lr_flip = True
-            if lr_flip and random.random() < 0.5:
-                img = np.fliplr(img)
-                if nL:
-                    labels[:, 1] = 1 - labels[:, 1]
-                    labels[:, 5] = -labels[:, 5]
-
-            # random up-down flip
-            ud_flip = True
-            if ud_flip and random.random() < 0.5:
-                img = np.flipud(img)
-                if nL:
-                    labels[:, 2] = 1 - labels[:, 2]
-                    labels[:, 5] = -labels[:, 5]
-            
-            # blur = True
-            # if blur and random.random() < 0.5:
-            #     blur_aug = iaa.GaussianBlur(sigma=(0.0,hyp['blur']))
-            #     img = blur_aug.augment_image(img)
-            
-            gamma = True
-            if gamma and random.random() < 0.5:
-                gm = random.uniform(1-hyp['gamma'],1+hyp['gamma'])
-                img = np.uint8(np.power(img/float(np.max(img)), gm)*np.max(img))
-            
-            noise = True
-            if noise and random.random() < 0.5:
-                noise_aug = iaa.AdditiveGaussianNoise(scale=(0, hyp['noise']*255))
-                img = noise_aug.augment_image(img)
-
-            sharpen = True
-            if sharpen and random.random() < 0.5:
-                sharpen_aug = iaa.Sharpen(alpha=(0.0, 1.0), lightness=(1-hyp['sharpen'],1+hyp['sharpen']))
-                img = sharpen_aug.augment_image(img)
-            
-            contrast = True
-            if sharpen and random.random() < 0.3:
-                contrast_aug = aug = iaa.contrast.LinearContrast((1-hyp['contrast'],1+hyp['contrast']))
-                img=contrast_aug.augment_image(img)
-
 
 
         labels_out = torch.zeros((nL, 7))
@@ -601,114 +544,6 @@ def letterbox(img, new_shape=416, color=(128, 128, 128), mode='square'):
     img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)  # add border
     return img, ratiow, ratioh, dw, dh
 
-# 一次传入的是一张图像 target是xyxya的格式
-# 注意：仅支持box无形变的augment
-def random_affine(img, targets=(), degrees=10, translate=.1, scale=.1, shear=10):
-    # torchvision.transforms.RandomAffine(degrees=(-10, 10), translate=(.1, .1), scale=(.9, 1.1), shear=(-10, 10))
-    # https://medium.com/uruvideo/dataset-augmentation-with-random-homographies-a8f4b44830d4
-    
-    if targets is None:
-        targets = []
-    border = 0  # width of added border (optional)
-    height = img.shape[0] + border * 2
-    width = img.shape[1] + border * 2
-
-    # Rotation and Scale
-    R = np.eye(3)
-    a = random.uniform(-degrees, degrees)
-    # # # a += random.choice([-180, -90, 0, 90])  # add 90deg rotations to small rotations
-    s = random.uniform(1 - scale, 1 + scale)
-    R[:2] = cv2.getRotationMatrix2D(angle=a, center=(img.shape[1] / 2, img.shape[0] / 2), scale=s)
-
-    # Translation
-    T = np.eye(3)
-    T[0, 2] = random.uniform(-translate, translate) * img.shape[0] + border  # x translation (pixels)
-    T[1, 2] = random.uniform(-translate, translate) * img.shape[1] + border  # y translation (pixels)
-
-
-    M =  T @ R  # Combined rotation matrix. ORDER IS IMPORTANT HERE!!
-    imw = cv2.warpAffine(img, M[:2], dsize=(width, height), flags=cv2.INTER_AREA,
-                         borderValue=(128, 128, 128))  # BGR order borderValue
-
-    # Return warped points also
-    if len(targets) > 0:
-        n = targets.shape[0]
-
-        targets[:,5]-=a/180*math.pi # 逆时针
-        targets[:,5][targets[:,5]> 0.5*math.pi] -= math.pi
-        targets[:,5][targets[:,5]<-0.5*math.pi] += math.pi
-
-        transcx = targets[:,1] * M[0,0] + targets[:,2] * M[0,1] + M[0,2]
-        transcy = targets[:,1] * M[1,0] + targets[:,2] * M[1,1] + M[1,2]
-        targets[:,1] = transcx
-        targets[:,2] = transcy
-        targets[:,[3,4]] *= s
-
-        # reject warped points outside of image
-        targets[:,1] = targets[:,1].clip(0, width)
-        targets[:,2] = targets[:,2].clip(0, height)
-        w = targets[:,3]
-        h = targets[:,4]
-        ar = np.maximum(w / (h + 1e-16), h / (w + 1e-16))
-        coors = torch.stack([get_rotated_coors(i) for i in torch.from_numpy(targets[:,1:])],0)
-        i = (w > 4) & \
-            (h > 4) & \
-            (ar < 15) & \
-            torch.stack([((i[::2] <img.shape[1]) * (i[::2] >0)).all() for i in coors],0).numpy() & \
-            torch.stack([((i[1::2]<img.shape[0]) * (i[1::2]>0)).all() for i in coors],0).numpy()
-       
-        targets = targets[i]
-    return imw, targets
-
-
-def cutout(image, labels):
-    # https://arxiv.org/abs/1708.04552
-    # https://github.com/hysts/pytorch_cutout/blob/master/dataloader.py
-    # https://towardsdatascience.com/when-conventional-wisdom-fails-revisiting-data-augmentation-for-self-driving-cars-4831998c5509
-    h, w = image.shape[:2]
-
-    def bbox_ioa(box1, box2, x1y1x2y2=True):
-        # Returns the intersection over box2 area given box1, box2. box1 is 4, box2 is nx4. boxes are x1y1x2y2
-        box2 = box2.transpose()
-
-        # Get the coordinates of bounding boxes
-        # x1, y1, x2, y2 = box1
-        b1_x1, b1_y1, b1_x2, b1_y2 = box1[0], box1[1], box1[2], box1[3]
-        b2_x1, b2_y1, b2_x2, b2_y2 = box2[0], box2[1], box2[2], box2[3]
-
-        # Intersection area
-        inter_area = (np.minimum(b1_x2, b2_x2) - np.maximum(b1_x1, b2_x1)).clip(0) * \
-                     (np.minimum(b1_y2, b2_y2) - np.maximum(b1_y1, b2_y1)).clip(0)
-
-        # box2 area
-        box2_area = (b2_x2 - b2_x1) * (b2_y2 - b2_y1) + 1e-16
-
-        # Intersection over box2 area
-        return inter_area / box2_area
-
-    # random mask_size up to 50% image size
-    mask_h = random.randint(1, int(h * 0.5))
-    mask_w = random.randint(1, int(w * 0.5))
-
-    # box center
-    cx = random.randint(0, h)
-    cy = random.randint(0, w)
-
-    xmin = max(0, cx - mask_w // 2)
-    ymin = max(0, cy - mask_h // 2)
-    xmax = min(w, xmin + mask_w)
-    ymax = min(h, ymin + mask_h)
-
-    # apply random color mask
-    mask_color = [random.randint(0, 255) for _ in range(3)]
-    image[ymin:ymax, xmin:xmax] = mask_color
-
-    # return unobscured labels
-    if len(labels):
-        box = np.array([xmin, ymin, xmax, ymax], dtype=np.float32)
-        ioa = bbox_ioa(box, labels[:, 1:5])  # intersection over area
-        labels = labels[ioa < 0.90]  # remove >90% obscured labels
-    return labels
 
 
 def convert_images2bmp():

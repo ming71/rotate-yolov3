@@ -9,6 +9,8 @@ __pycache__/
 /data/samples/
 /data/train/
 /data/test/
+/data/all/
+/data/extra/
 /backup/
 /output/
 /weights/
