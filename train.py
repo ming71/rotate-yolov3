@@ -304,16 +304,17 @@ def train():
         else:
             # Calculate mAP (always test final epoch, skip first 10 if opt.nosave)
             if not (opt.notest or (opt.nosave and epoch < 10)) or final_epoch:
-                with torch.no_grad():
-                    if epoch%hyp['test_interval']==0 and epoch!=0:
-                        results, maps = test.test(cfg,
-                                                data,
-                                                batch_size=1,
-                                                img_size=opt.img_size,
-                                                model=model,
-                                                hyp=hyp,
-                                                conf_thres=0.001 if final_epoch and epoch > 0 else 0.001,  # 0.1 for speed
-                                                save_json=final_epoch and epoch > 0 and 'coco.data' in data)
+                if not epoch < 30: # 前30epoch不计算
+                    with torch.no_grad():
+                        if epoch%hyp['test_interval']==0 and epoch!=0:
+                            results, maps = test.test(cfg,
+                                                    data,
+                                                    batch_size=1,
+                                                    img_size=opt.img_size,
+                                                    model=model,
+                                                    hyp=hyp,
+                                                    conf_thres=0.001 if final_epoch and epoch > 0 else 0.1,  # 0.1 for speed
+                                                    save_json=final_epoch and epoch > 0 and 'coco.data' in data)
             # Write epoch results
         with open(results_file, 'a') as f:
             # f.write(s + '%10.3g' * 8 % results + '\n')  # P, R, mAP, F1, test_losses=(GIoU, obj, cls)
@@ -375,7 +376,7 @@ def train():
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--accumulate', type=int, default=4, help='batches to accumulate before optimizing')
-    parser.add_argument('--cfg', type=str, default='cfg/yolov3-m.cfg', help='cfg file path')
+    parser.add_argument('--cfg', type=str, default='cfg/yolov3.cfg', help='cfg file path')
     parser.add_argument('--hyp', type=str, default='cfg/hyp.py', help='hyper-parameter path')
     parser.add_argument('--data', type=str, default='data/voc.data', help='*.data file path')
     parser.add_argument('--multi-scale', action='store_true', help='adjust (67% - 150%) img_size every 10 batches')

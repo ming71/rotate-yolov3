@@ -20,7 +20,6 @@ def test(cfg,
          save_json=False,
          hyp=None,
          model=None):
-
     # Initialize/load model and set device
     if model is None:
         device = torch_utils.select_device(opt.device)

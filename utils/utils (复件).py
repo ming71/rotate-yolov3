@@ -246,13 +246,13 @@ def ap_per_class(tp, conf, pred_cls, target_cls):
             ap.append(compute_ap(recall, precision))
 
             # Plot
-            # fig, ax = plt.subplots(1, 1, figsize=(4, 4))
-            # ax.plot(np.concatenate(([0.], recall)), np.concatenate(([0.], precision)))
-            # ax.set_xlabel('Recall')
-            # ax.set_ylabel('Precision')
-            # ax.set_xlim(0, 1)
-            # fig.tight_layout()
-            # fig.savefig('PR_curve.png', dpi=300)
+            fig, ax = plt.subplots(1, 1, figsize=(4, 4))
+            ax.plot(np.concatenate(([0.], recall)), np.concatenate(([0.], precision)))
+            ax.set_xlabel('Recall')
+            ax.set_ylabel('Precision')
+            ax.set_xlim(0, 1)
+            fig.tight_layout()
+            fig.savefig('PR_curve.png', dpi=300)
 
     # Compute F1 score (harmonic mean of precision and recall)
     p, r, ap = np.array(p), np.array(r), np.array(ap)
@@ -580,7 +580,6 @@ def build_targets(model, targets, hyp):
 
         # gt_convert   
         gxy -= gxy.floor()  # xy  # 在一个grid cell内的坐标(即原坐标减去grid cell的位置) 
-        t_gwha = gwha.clone()   # 留个备份后面reject用的到
         gwha[:,:2] = torch.log(gwha[:,:2] / anchor_vec[a][:,:2]) 
         gwha[:, 2] = torch.tan(gwha[:, 2] - anchor_vec[a][:, 2])
         tbox.append(torch.cat((gxy, gwha), 1))  # xywha (grids)  tbox编码xywa (xy是一个cell内的偏移)
@@ -591,11 +590,11 @@ def build_targets(model, targets, hyp):
         if c.shape[0]:  # if any targets
             assert c.max() <= model.nc, 'Target classes exceed model classes'
 
+
     # reject anchors below iou_thres (OPTIONAL, increases P, lowers R)
     reject = True   # 训练时筛掉和gt的iou过小, 以及角度差太大（至少阈值0.5pi，确保回归范围无错）的anchor
     if reject:
-        angle_offset = abs(t_gwha[:,-1] - anchor_vec[:,-1].view((-1, 1)).repeat([1,nt]).view(-1))
-        angle_offset[torch.where(angle_offset > 0.5*math.pi)] = math.pi - angle_offset[torch.where(angle_offset > 0.5*math.pi)]
+        angle_offset = abs(gwha[:,-1] - anchor_vec[:,-1].view((-1, 1)).repeat([1,nt]).view(-1))
         j_iou = [sq_iou >model.hyp['iou_t'] for sq_iou in square_ious] # iou要区分layer计算
         j_a = angle_offset <  model.hyp['ang_t']  # 角度不分layer都是一样的
         j = [ju * j_a for ju in j_iou] 
@@ -605,12 +604,13 @@ def build_targets(model, targets, hyp):
         for gt_id, gt_ in enumerate(gt_j):
             if not any(gt_):    # 遍历每个多个层都没有anchor的gt
                 gt_ious = torch.cat([sq_iou[gt_id::nt]  for sq_iou in square_ious],0)   # 取出所有layer iou展成行进行比较(na*num_layers)
-                best_iou_indexes = torch.where(gt_ious==gt_ious.max(0)[0])[0]  # gt_iou内的索引:max 216 = na * num_layer
-                layer_id = (best_iou_indexes/na)[0]
+                best_iou_indexes   = torch.where(gt_ious==gt_ious.max(0)[0])[0]  # gt_iou内的索引
+                layer_id = best_iou_indexes/na
                 best_ang_indexes = angle_offset[gt_id::nt].repeat(num_layers)[best_iou_indexes].min(0)[1]
                 best_iou_indexes = best_iou_indexes[best_ang_indexes]
-                j[layer_id][(best_iou_indexes % na) * nt + gt_id] = True
+                j[layer_id[0]][(best_iou_indexes % num_layers) * nt + gt_id] = True
 
+        # print([q.sum() for q in j])
         # anchor mask
         for lid, mask_j in enumerate(j):
             tbox[lid] = tbox[lid][mask_j]
