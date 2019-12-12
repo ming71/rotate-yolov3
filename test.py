@@ -4,10 +4,15 @@ import torch
 
 from torch.utils.data import DataLoader
 
-from models import *
-from utils.datasets import *
+from model.models import Darknet
+from model.model_utils import attempt_download, parse_data_cfg
+from utils.datasets import LoadImagesAndLabels
 from utils.utils import *
+from utils.parse_config import parse_model_cfg
 from utils.nms.r_nms import r_nms
+from model.loss import compute_loss
+from utils.nms.nms import non_max_suppression
+
 
 def test(cfg,
          data,
@@ -198,15 +203,15 @@ def test(cfg,
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(prog='test.py')
-    parser.add_argument('--cfg', type=str, default='cfg/yolov3.cfg', help='cfg file path')
+    parser.add_argument('--hyp', type=str, default='cfg/HRSC+/hyp.py', help='hyper-parameter path')
+    parser.add_argument('--cfg', type=str, default='cfg/HRSC+/yolov3_512.cfg', help='cfg file path')
     parser.add_argument('--data', type=str, default='data/voc.data', help='coco.data file path')
     parser.add_argument('--weights', type=str, default='weights/best.pt', help='path to weights file')
     parser.add_argument('--batch-size', type=int, default=1, help='size of each image batch')
-    parser.add_argument('--img-size', type=int, default=416, help='inference size (pixels)')
+    parser.add_argument('--img-size', type=int, default=512, help='inference size (pixels)')
     parser.add_argument('--iou-thres', type=float, default=0.5, help='iou threshold required to qualify as detected')
     parser.add_argument('--conf-thres', type=float, default=0.001, help='object confidence threshold')
     parser.add_argument('--nms-thres', type=float, default=0.5, help='iou threshold for non-maximum suppression')
-    parser.add_argument('--hyp', type=str, default='cfg/hyp.py', help='hyper-parameter path')
     parser.add_argument('--save-json', action='store_true', help='save a cocoapi-compatible JSON results file')
     parser.add_argument('--device', default='', help='device id (i.e. 0 or 0,1) or cpu')
     opt = parser.parse_args()

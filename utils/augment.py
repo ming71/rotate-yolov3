@@ -44,6 +44,18 @@ class Blur(object):
         return img, labels
 
 
+class Grayscale(object):
+    def __init__(self, grayscale=0. ,p=0.5):
+        self.alpha = random.uniform(grayscale,1.0)
+        self.p = p
+
+    def __call__(self, img, labels):
+        if random.random() < self.p:
+            gray_aug = iaa.Grayscale(alpha=(self.alpha, 1.0))
+            img = gray_aug.augment_image(img)
+        return img, labels
+
+
 class Gamma(object):
     def __init__(self, intensity=0 ,p=0.5):
         self.intensity = intensity 

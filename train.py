@@ -4,13 +4,17 @@ import torch
 import torch.distributed as dist
 import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
-
-import test  # import test.py to get mAP after each epoch
-from models import *
-from utils.datasets import *
-from utils.utils import *
 import time
 import math
+import torch.nn.functional as F
+
+import test     # import test.py to get mAP after each epoch
+from model.models import Darknet
+from model.model_utils import parse_data_cfg, attempt_download
+from utils.datasets import LoadImagesAndLabels
+from utils.utils import *
+from model.loss import compute_loss
+
 from warmup_scheduler import GradualWarmupScheduler
 
 
@@ -46,7 +50,7 @@ def train():
 
     if multi_scale:
         img_sz_min = round(img_size / 32 / 1.5) + 1
-        img_sz_max = round(img_size / 32 * 1.5) - 1
+        img_sz_max = round(img_size / 32 * 1.3) - 1
         img_size = img_sz_max * 32  # initiate with maximum multi_scale size
         print('Using multi-scale %g - %g' % (img_sz_min * 32, img_size))
 
@@ -134,24 +138,18 @@ def train():
     # lf = lambda x: 1 - 10 ** (hyp['lrf'] * (1 - x / epochs))  # inverse exp ramp
     # scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lf)
     # scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=range(59, 70, 1), gamma=0.8)  # gradual fall to 0.1*lr0
-    # scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[round(epochs * x) for x in [0.8, 0.9]], gamma=0.1)
-    scheduler = lr_scheduler.CosineAnnealingLR(optimizer, epochs)
+    scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[round(epochs * x) for x in [0.8, 0.9]], gamma=0.1)
+    # scheduler = lr_scheduler.CosineAnnealingLR(optimizer, epochs)
     scheduler = GradualWarmupScheduler(optimizer, 
                                        multiplier=hyp['multiplier'], 
                                        total_epoch=hyp['warm_epoch'], 
                                        after_scheduler=scheduler)
     scheduler.last_epoch = start_epoch - 1
 
-    # # # Plot lr schedule
-    # scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[round(epochs * x) for x in [0.8, 0.9]], gamma=0.1)
-    # scheduler = lr_scheduler.CosineAnnealingLR(optimizer, epochs)
-    # scheduler_warmup = GradualWarmupScheduler(optimizer, 
-    #                                           multiplier=hyp['multiplier'], 
-    #                                           total_epoch=hyp['warm_epoch'], 
-    #                                           after_scheduler=scheduler)
+    # # # Plot lr schedule(注意别一直开着！否则lr调整失效)
     # y = []
     # for _ in range(epochs):
-    #     scheduler_warmup.step()
+    #     scheduler.step()
     #     y.append(optimizer.param_groups[0]['lr'])
     # plt.plot(y, label='LR')
     # plt.xlabel('epoch')
@@ -176,12 +174,13 @@ def train():
     dataset = LoadImagesAndLabels(train_path,
                                   img_size,
                                   batch_size,
-                                  augment=True,
+                                  augment=False,
                                   hyp=hyp,  # augmentation hyperparameters
                                   rect=opt.rect,  # rectangular training
                                   image_weights=opt.img_weights,
                                   cache_labels=True if epochs > 10 else False,
-                                  cache_images=False if opt.prebias else opt.cache_images)
+                                  cache_images=False if opt.prebias else opt.cache_images,
+                                  )
 
     # Dataloader
     dataloader = torch.utils.data.DataLoader(dataset,
@@ -205,6 +204,7 @@ def train():
     print('Starting %s for %g epochs...' % ('prebias' if opt.prebias else 'training', epochs))
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
+        model.epoch = epoch
         # print(('\n' + '%10s' * 9) % ('Epoch', 'gpu_mem', 'GIoU', 'obj', 'cls', 'reg', 'total', 'targets', 'img_size'))
         print(('\n' + '%10s' * 8) % ('Epoch', 'gpu_mem', 'obj', 'cls', 'reg', 'total', 'targets', 'img_size'))
 
@@ -304,7 +304,7 @@ def train():
         else:
             # Calculate mAP (always test final epoch, skip first 10 if opt.nosave)
             if not (opt.notest or (opt.nosave and epoch < 10)) or final_epoch:
-                if not epoch < 30: # 前30epoch不计算
+                if not epoch < 10: # 前部分epoch proposal太多，不计算
                     with torch.no_grad():
                         if epoch%hyp['test_interval']==0 and epoch!=0:
                             results, maps = test.test(cfg,
@@ -373,14 +373,15 @@ def train():
     return results
 
 
+# python train.py  --adam --arc Fdefault --prebias  
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--accumulate', type=int, default=4, help='batches to accumulate before optimizing')
-    parser.add_argument('--cfg', type=str, default='cfg/yolov3.cfg', help='cfg file path')
-    parser.add_argument('--hyp', type=str, default='cfg/hyp.py', help='hyper-parameter path')
+    parser.add_argument('--hyp', type=str, default='cfg/HRSC+/hyp.py', help='hyper-parameter path')
+    parser.add_argument('--cfg', type=str, default='cfg/HRSC+/yolov3_512.cfg', help='cfg file path')
     parser.add_argument('--data', type=str, default='data/voc.data', help='*.data file path')
     parser.add_argument('--multi-scale', action='store_true', help='adjust (67% - 150%) img_size every 10 batches')
-    parser.add_argument('--img-size', type=int, default=416, help='inference size (pixels)')
+    parser.add_argument('--img-size', type=int, default=512, help='inference size (pixels)')
     parser.add_argument('--rect', action='store_true', help='rectangular training')
     parser.add_argument('--resume', action='store_true', help='resume training from last.pt')
     parser.add_argument('--transfer', action='store_true', help='transfer learning')

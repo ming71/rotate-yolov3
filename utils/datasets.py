@@ -405,7 +405,6 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
     #     print('ran dataset iter')
     #     #self.shuffled_vector = np.random.permutation(self.nF) if self.augment else np.arange(self.nF)
     #     return self
-
     '''
     详细展开这个__getitem__类:
     python的迭代执行对象有两种:迭代器对象和可迭代对象；
@@ -468,18 +467,20 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 labels[:, 4] = ratioh * h * labels[:, 4]
 
         # 数据增强
-        if self.augment:  
+        if self.augment:
             transform = Transform([Affine( hyp['degrees'] ,hyp['translate'],hyp['scale'],hyp['shear'], p = 0.5),
-                                  Contrast(hyp['contrast'], p = 0.3),
-                                  Sharpen(hyp['contrast'], p = 0.2),
-                                  Noise(hyp['noise'], p = 0.2),
-                                  Gamma(hyp['gamma'], p = 0.4),
-                                  Blur(hyp['blur'], p = 0.5),
-                                  HSV(hyp['hsv_s'],hyp['hsv_v'], p = 0.5),
-                                  HorizontalFlip(p = 0.5),
-                                  VerticalFlip(p = 0.5),
-                                  CopyPaste(sigma = hyp['copypaste'], p=0.1)
-                                  ])
+                                Contrast(hyp['contrast'], p = 0.3),
+                                Sharpen(hyp['contrast'], p = 0.2),
+                                Noise(hyp['noise'], p = 0.2),
+                                Gamma(hyp['gamma'], p = 0.4),
+                                Blur(hyp['blur'], p = 0.5),
+                                HSV(hyp['hsv_s'],hyp['hsv_v'], p = 0.5),
+                                HorizontalFlip(p = 0.5),
+                                VerticalFlip(p = 0.5),
+                                CopyPaste(sigma = hyp['copypaste'], p=0.2),
+                                Grayscale(hyp['grayscale'],p=0.5)
+                                ])
+        
             img, labels = transform(img, labels)
 
         nL = len(labels)  # number of labels

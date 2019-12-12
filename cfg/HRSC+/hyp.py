@@ -11,9 +11,9 @@ context_factor: 1.0 # 按照短边h来设置的,wh的增幅相同； 调试时�
 
 
 # lr
-lr0: 0.000025
+lr0: 0.0001
 multiplier:10
-warm_epoch:10
+warm_epoch:5
 lrf: -4.        # final LambdaLR learning rate = lr0 * (10 ** lrf)
 momentum: 0.97  # SGD momentum
 weight_decay: 0.0004569  # optimizer weight decay
@@ -24,18 +24,19 @@ hsv_s: 0.5      # image HSV-Saturation augmentation (fraction)
 hsv_v: 0.3      # image HSV-Value augmentation (fraction)
 degrees: 5.0    # image rotation (+/- deg)
 translate: 0.1  # image translation (+/- fraction)
-scale: 0.15      # image scale (+/- gain)
+scale: 0.1      # image scale (+/- gain)
 shear: 0.0
 gamma: 0.2
 blur:  1.3
 noise: 0.01
 contrast: 0.15
 sharpen: 0.15
-copypaste: 0.1  # 3sigma=3, 船身 h 的 3sigma 段位以内 
+copypaste: 0.1  # 船身 h 的 3sigma 段位以内 
+grayscale: 0.3  # 灰度强度为0.3-1.0
 
 
 # training
 epochs: 1000
-batch_size: 8
+batch_size: 4
 save_interval: 300
-test_interval: 10
+test_interval: 5

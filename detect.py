@@ -1,9 +1,12 @@
 import argparse
 from sys import platform
+import time
 
-from models import *  
-from utils.datasets import *
+from model.models import Darknet
+from model.model_utils import attempt_download,parse_data_cfg
+from utils.datasets import LoadImages
 from utils.utils import *
+from utils.nms.nms import non_max_suppression
 
 
 def detect(save_txt=False, save_img=False,hyp=None):
@@ -97,6 +100,8 @@ def detect(save_txt=False, save_img=False,hyp=None):
                     if save_img or view_img:  # Add bbox to image
                         label = '%s %.2f' % (classes[int(cls)], conf)
                         plot_one_box(box, im0, label=label, color=colors[int(cls)])
+                        # plot_one_box(box, im0, label=label, color=[0,0,255], line_thickness=1)
+                        
 
             print('%sDone. (%.3fs)' % (s, time.time() - t))
 
@@ -130,18 +135,18 @@ def detect(save_txt=False, save_img=False,hyp=None):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--cfg', type=str, default='cfg/yolov3.cfg', help='cfg file path')
+    parser.add_argument('--hyp', type=str, default='cfg/HRSC+/hyp.py', help='hyper-parameter path')
+    parser.add_argument('--cfg', type=str, default='cfg/HRSC+/yolov3_512_se.cfg', help='cfg file path')
     parser.add_argument('--data', type=str, default='data/voc.data', help='coco.data file path')
-    parser.add_argument('--weights', type=str, default='weights/last.pt', help='path to weights file')
-    parser.add_argument('--source', type=str, default='data/all', help='source')  # input file/folder, 0 for webcam
+    parser.add_argument('--weights', type=str, default='weights/best.pt', help='path to weights file')
+    parser.add_argument('--source', type=str, default='data/test', help='source')  # input file/folder, 0 for webcam
     parser.add_argument('--output', type=str, default='output', help='output folder')  # output folder
-    parser.add_argument('--img-size', type=int, default=416, help='inference size (pixels)')
+    parser.add_argument('--img-size', type=int, default=512, help='inference size (pixels)')
     parser.add_argument('--conf-thres', type=float, default=0.5, help='object confidence threshold')
     parser.add_argument('--nms-thres', type=float, default=0.2, help='iou threshold for non-maximum suppression')
     parser.add_argument('--fourcc', type=str, default='mp4v', help='output video codec (verify ffmpeg support)')
     parser.add_argument('--half', action='store_true', help='half precision FP16 inference')
     parser.add_argument('--device', default='', help='device id (i.e. 0 or 0,1) or cpu')
-    parser.add_argument('--hyp', type=str, default='cfg/hyp.py', help='hyper-parameter path')
     parser.add_argument('--view-img', action='store_true', help='display results')
     opt = parser.parse_args()
     print(opt)
