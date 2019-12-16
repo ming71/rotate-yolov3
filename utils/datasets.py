@@ -76,7 +76,7 @@ class LoadImages:  # for inference
         self.count = 0
         return self
 
-    # __iter__方法决定该类是 迭代器类 。
+    # __iter__方法决定该类是迭代器类 。
     def __next__(self):
         if self.count == self.nF:
             raise StopIteration         # 抛出StopIteration异常终止__next__方法迭代
@@ -469,15 +469,15 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         # 数据增强
         if self.augment:
             transform = Transform([Affine( hyp['degrees'] ,hyp['translate'],hyp['scale'],hyp['shear'], p = 0.5),
-                                Contrast(hyp['contrast'], p = 0.3),
-                                Sharpen(hyp['contrast'], p = 0.2),
+                                # Contrast(hyp['contrast'], p = 0.3),
+                                # Sharpen(hyp['contrast'], p = 0.2),
                                 Noise(hyp['noise'], p = 0.2),
                                 Gamma(hyp['gamma'], p = 0.4),
                                 Blur(hyp['blur'], p = 0.5),
                                 HSV(hyp['hsv_s'],hyp['hsv_v'], p = 0.5),
                                 HorizontalFlip(p = 0.5),
                                 VerticalFlip(p = 0.5),
-                                CopyPaste(sigma = hyp['copypaste'], p=0.2),
+                                # CopyPaste(sigma = hyp['copypaste'], p=0.2),
                                 Grayscale(hyp['grayscale'],p=0.5)
                                 ])
         

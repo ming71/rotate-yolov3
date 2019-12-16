@@ -1,6 +1,6 @@
 classes=1
 train=/py/datasets/HRSC+/train.txt
 valid=/py/datasets/HRSC+/val.txt
-names=data/ship.name
+names=data/hrsc.name
 backup=backup/
 eval=coco

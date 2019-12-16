@@ -4,14 +4,10 @@
 __pycache__/
 *.py[cod]
 
-/dataset/
+
 /runs/
-/data/samples/
-/data/train/
-/data/test/
-/data/all/
-/data/extra/
-/backup/
+/data/HRSC+/
+/data/ICDAR/test/
 /output/
 /weights/
 /utils/kmeans/

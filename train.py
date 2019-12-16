@@ -109,7 +109,9 @@ def train():
             with open(results_file, 'w') as file:
                 file.write(chkpt['training_results'])  # write results.txt
 
-        start_epoch = chkpt['epoch'] + 1
+        if opt.resume:
+            start_epoch = chkpt['epoch'] + 1   
+
         del chkpt
 
     # elif len(weights) > 0:  # darknet format
@@ -138,8 +140,12 @@ def train():
     # lf = lambda x: 1 - 10 ** (hyp['lrf'] * (1 - x / epochs))  # inverse exp ramp
     # scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lf)
     # scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=range(59, 70, 1), gamma=0.8)  # gradual fall to 0.1*lr0
-    scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[round(epochs * x) for x in [0.8, 0.9]], gamma=0.1)
-    # scheduler = lr_scheduler.CosineAnnealingLR(optimizer, epochs)
+    # scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[round(epochs * x) for x in [0.8, 0.9]], gamma=0.1)
+    # 带重启的余弦退火
+    # scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max = 0.1*epochs, eta_min=0, last_epoch=-1)  
+    # 余弦退火
+    scheduler = lr_scheduler.CosineAnnealingLR(optimizer, epochs)
+    # warmup加载器,支持各种scheduler
     scheduler = GradualWarmupScheduler(optimizer, 
                                        multiplier=hyp['multiplier'], 
                                        total_epoch=hyp['warm_epoch'], 
@@ -157,7 +163,6 @@ def train():
     # plt.tight_layout()
     # plt.savefig('LR.png', dpi=300)
 
-    # Mixed precision training https://github.com/NVIDIA/apex
     if mixed_precision:
         model, optimizer = amp.initialize(model, optimizer, opt_level='O1', verbosity=0)
 
@@ -174,7 +179,7 @@ def train():
     dataset = LoadImagesAndLabels(train_path,
                                   img_size,
                                   batch_size,
-                                  augment=False,
+                                  augment=True,
                                   hyp=hyp,  # augmentation hyperparameters
                                   rect=opt.rect,  # rectangular training
                                   image_weights=opt.img_weights,
@@ -376,12 +381,12 @@ def train():
 # python train.py  --adam --arc Fdefault --prebias  
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--accumulate', type=int, default=4, help='batches to accumulate before optimizing')
-    parser.add_argument('--hyp', type=str, default='cfg/HRSC+/hyp.py', help='hyper-parameter path')
-    parser.add_argument('--cfg', type=str, default='cfg/HRSC+/yolov3_512.cfg', help='cfg file path')
-    parser.add_argument('--data', type=str, default='data/voc.data', help='*.data file path')
+    parser.add_argument('--accumulate', type=int, default=8, help='batches to accumulate before optimizing')
+    parser.add_argument('--hyp', type=str, default='cfg/ICDAR/hyp.py', help='hyper-parameter path')
+    parser.add_argument('--cfg', type=str, default='cfg/ICDAR/yolov3_608_se.cfg', help='cfg file path')
+    parser.add_argument('--data', type=str, default='data/icdar_13+15.data', help='*.data file path')
     parser.add_argument('--multi-scale', action='store_true', help='adjust (67% - 150%) img_size every 10 batches')
-    parser.add_argument('--img-size', type=int, default=512, help='inference size (pixels)')
+    parser.add_argument('--img-size', type=int, default=608, help='inference size (pixels)')
     parser.add_argument('--rect', action='store_true', help='rectangular training')
     parser.add_argument('--resume', action='store_true', help='resume training from last.pt')
     parser.add_argument('--transfer', action='store_true', help='transfer learning')
@@ -391,7 +396,7 @@ if __name__ == '__main__':
     parser.add_argument('--bucket', type=str, default='', help='gsutil bucket')
     parser.add_argument('--img-weights', action='store_true', help='select training images by weight')
     parser.add_argument('--cache-images', action='store_true', help='cache images for faster training')
-    parser.add_argument('--weights', type=str, default='', help='initial weights')  # i.e. weights/darknet.53.conv.74
+    parser.add_argument('--weights', type=str, default='weights/pretrain.pt', help='initial weights')  # i.e. weights/darknet.53.conv.74
     parser.add_argument('--arc', type=str, default='defaultpw', help='yolo architecture')  # defaultpw, uCE, uBCE
     parser.add_argument('--prebias', action='store_true', help='transfer-learn yolo biases prior to training')
     parser.add_argument('--name', default='', help='renames results.txt to results_name.txt if supplied')

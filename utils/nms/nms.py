@@ -25,6 +25,9 @@ def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.5):
         # shape_likelihood[:, c] =
         #   multivariate_normal.pdf(x, mean=mat['class_mu'][c, :2], cov=mat['class_cov'][c, :2, :2])
 
+        if prediction.numel() == 0: # for multi-scale filtered result , in case of 0
+            continue
+
         # Multiply conf by class conf to get combined confidence
         # max(1)是按照1维搜索,对每个proposal取出多分类分数,得到最大的那个值
         # 返回值class_conf和索引class_pred,索引就是类别所属
@@ -54,8 +57,8 @@ def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.5):
             for c in pred[:, -1].unique():
                 dc = pred[pred[:, -1] == c]
                 dc = dc[(-dc[:, 5]).argsort()]
-                if len(dc)>100:   # 如果proposal实在太多，取100个
-                    dc = dc[:100]
+                # if len(dc)>100:   # 如果proposal实在太多，取100个
+                #     dc = dc[:100]
 
                 # Non-maximum suppression
                 inds = r_nms(dc[:,:6], nms_thres)

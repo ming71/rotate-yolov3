@@ -723,3 +723,6 @@ def get_rotated_coors(box):
     else:
         r_box = np.array([x0,y0,x1,y1,x2,y2,x3,y3])
     return r_box
+
+def is_None(x):
+    return x is not None

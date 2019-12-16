@@ -178,7 +178,8 @@ def build_targets(model, targets, hyp):
         targets[:,5] *= hyp['context_factor']
         
         # iou of targets-anchors
-        gwha = targets[:, 4:7].clone() # 注意深拷贝！
+        t, a = targets, []
+        gwha = t[:, 4:7].clone() # 注意深拷贝！
         gwha[:,:-1] *= ng        # 缩放到当前yolo层尺寸上
         if nt:
             # shape: [num_anchor, num_boxes],所有gt和当前yolo层上anchor的iou
@@ -250,7 +251,7 @@ def build_targets(model, targets, hyp):
     # reject anchors below iou_thres 
     # 实现方法是mask矩阵j，shape为(num_layers, nt * 72); 正样本1 负样本0 ign -1
     reject = True   # 训练时筛掉和gt的iou过小, 以及角度差太大（至少阈值0.5pi，确保回归范围无错）的anchor
-    if reject:
+    if reject and nt :
         angle_offset = abs(t_gwha[:,-1] - anchor_vec[:,-1].view((-1, 1)).repeat([1,nt]).view(-1))   # 角度mask没必要区分layer，不同layer的angle一样，只是尺度大小不同
         angle_offset[torch.where(angle_offset > 0.5*math.pi)] = math.pi - angle_offset[torch.where(angle_offset > 0.5*math.pi)]
         j_iou = [sq_iou >model.hyp['iou_t'] for sq_iou in square_ious] # iou要区分layer计算

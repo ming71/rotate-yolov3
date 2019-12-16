@@ -12,7 +12,7 @@ from utils.utils import get_rotated_coors
 
 
 class HSV(object):
-    def __init__(self , saturation=0, brightness=0, p=0.5):
+    def __init__(self , saturation=0, brightness=0, p=0.):
         self.saturation = saturation 
         self.brightness = brightness
         self.p = p
@@ -33,7 +33,7 @@ class HSV(object):
     
 
 class Blur(object):
-    def __init__(self, sigma=0 ,p=0.5):
+    def __init__(self, sigma=0 ,p=0.):
         self.sigma = sigma 
         self.p = p
 
@@ -45,7 +45,7 @@ class Blur(object):
 
 
 class Grayscale(object):
-    def __init__(self, grayscale=0. ,p=0.5):
+    def __init__(self, grayscale=0. ,p=0.):
         self.alpha = random.uniform(grayscale,1.0)
         self.p = p
 
@@ -57,7 +57,7 @@ class Grayscale(object):
 
 
 class Gamma(object):
-    def __init__(self, intensity=0 ,p=0.5):
+    def __init__(self, intensity=0 ,p=0.):
         self.intensity = intensity 
         self.p = p
 
@@ -69,7 +69,7 @@ class Gamma(object):
 
 
 class Noise(object):
-    def __init__(self, intensity=0 ,p=0.5):
+    def __init__(self, intensity=0 ,p=0.):
         self.intensity = intensity 
         self.p = p
 
@@ -82,7 +82,7 @@ class Noise(object):
 
 
 class Sharpen(object):
-    def __init__(self, intensity=0 ,p=0.5):
+    def __init__(self, intensity=0 ,p=0.):
         self.intensity = intensity 
         self.p = p
 
@@ -94,7 +94,7 @@ class Sharpen(object):
 
 
 class Contrast(object):
-    def __init__(self, intensity=0 ,p=0.5):
+    def __init__(self, intensity=0 ,p=0.):
         self.intensity = intensity 
         self.p = p
 
@@ -108,7 +108,7 @@ class Contrast(object):
 
 
 class HorizontalFlip(object):
-    def __init__(self, p=0.5):
+    def __init__(self, p=0.):
         self.p = p
 
     def __call__(self, img, labels):
@@ -121,7 +121,7 @@ class HorizontalFlip(object):
 
 
 class VerticalFlip(object):
-    def __init__(self ,p=0.5):
+    def __init__(self ,p=0.):
         self.p = p
 
     def __call__(self, img, labels):
@@ -134,7 +134,7 @@ class VerticalFlip(object):
 
 
 class Affine(object):
-    def __init__(self, degrees = 0., translate = 0., scale = 0., shear = 0., p=0.5):
+    def __init__(self, degrees = 0., translate = 0., scale = 0., shear = 0., p=0.):
         self.degrees = degrees 
         self.translate = translate
         self.scale = scale
@@ -153,7 +153,7 @@ class Affine(object):
 
 
 class CopyPaste(object):
-    def __init__(self, mean = 0 , sigma = 0, p=0.5):
+    def __init__(self, mean = 0 , sigma = 0, p=0.):
         self.mean = mean
         self.sigma = sigma
         self.p = np.clip(p, 0, 0.5)
@@ -245,6 +245,11 @@ class Transform(object):
             if random.random() < prob:
                 img, labels = augmentation(img, labels)
         return img, labels
+
+
+
+
+
 
 
 
@@ -357,6 +362,7 @@ def cutout(image, labels):
         ioa = bbox_ioa(box, labels[:, 1:5])  # intersection over area
         labels = labels[ioa < 0.90]  # remove >90% obscured labels
     return labels
+
 
 
 ##########  copy-paste实现相关

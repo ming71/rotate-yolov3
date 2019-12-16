@@ -33,7 +33,7 @@ class SELayer(nn.Module):
 
 
 
-def create_modules(module_defs, img_size, arc, hyp):
+def create_modules(module_defs, arc, hyp):
     # Constructs module list of layer blocks from module configuration in module_defs
 
     hyperparams = module_defs.pop(0)    # hyperparams是设置的超参数，pop出来就只剩下模型单元了
@@ -124,7 +124,6 @@ def create_modules(module_defs, img_size, arc, hyp):
             mask = [i for i in range(mask_range[0],mask_range[1]+1)]
             modules = YOLOLayer(anchors=mdef['anchors'][mask],  # anchor list，用mask提取特定的三个anchor尺度，eg.array([[116,90],[156,198],[373,326]])
                                 nc=int(mdef['classes']),  # number of classes,eg.20
-                                img_size=img_size,  # (416, 416)
                                 hyp = hyp,
                                 yolo_index=yolo_index,  # 0, 1 or 2三层
                                 arc=arc)  # yolo architecture
@@ -169,7 +168,7 @@ def create_modules(module_defs, img_size, arc, hyp):
 
 
 class YOLOLayer(nn.Module):
-    def __init__(self, anchors, nc, img_size, yolo_index, arc, hyp): 
+    def __init__(self, anchors, nc, yolo_index, arc, hyp): 
         super(YOLOLayer, self).__init__()
         self.anchors = torch.Tensor(anchors)
         self.na = len(anchors)  # number of anchors (3)
@@ -230,10 +229,10 @@ class YOLOLayer(nn.Module):
 
 class Darknet(nn.Module):
     # YOLOv3 object detection model
-    def __init__(self, cfg, hyp, img_size=(416, 416), arc='default'):
+    def __init__(self, cfg, hyp, arc='default'):
         super(Darknet, self).__init__()    
         self.module_defs = parse_model_cfg(cfg)     # 返回包含cfg组件dict的list便于调用
-        self.module_list, self.routes = create_modules(self.module_defs, img_size, arc, hyp)  # 搭建模型（只是堆叠没有连接，连接实现在forword，动态图）以及要融合的位置index（残差结构和多尺度concat两部分）
+        self.module_list, self.routes = create_modules(self.module_defs, arc, hyp)  # 搭建模型（只是堆叠没有连接，连接实现在forword，动态图）以及要融合的位置index（残差结构和多尺度concat两部分）
         self.yolo_layers = get_yolo_layers(self)    # yolo层的index: [82, 94, 106]
         self.hyp = hyp
 
