@@ -17,8 +17,8 @@ from model.loss import compute_loss
 
 from warmup_scheduler import GradualWarmupScheduler
 
-
-mixed_precision = True
+mixed_precision = False
+# mixed_precision = True
 try:  # Mixed precision training https://github.com/NVIDIA/apex
     from apex import amp
 except:
@@ -46,9 +46,7 @@ def train():
 
     # Initialize
     init_seeds()
-    multi_scale = opt.multi_scale
-
-    if multi_scale:
+    if opt.multi_scale:
         img_sz_min = round(img_size / 32 / 1.5) + 1
         img_sz_max = round(img_size / 32 * 1.3) - 1
         img_size = img_sz_max * 32  # initiate with maximum multi_scale size
@@ -57,6 +55,7 @@ def train():
     # Configure run
     data_dict = parse_data_cfg(data)
     train_path = data_dict['train']
+    test_path = data_dict['valid']
     nc = int(data_dict['classes'])  # number of classes
 
     # Remove previous results
@@ -84,12 +83,11 @@ def train():
 
     cutoff = -1  # backbone reaches to cutoff layer
     start_epoch = 0
-    best_fitness = 0.
+    best_fitness = float('inf')
+
     attempt_download(weights)
     if weights.endswith('.pt'):  # pytorch format
         # possible weights are 'last.pt', 'yolov3-spp.pt', 'yolov3-tiny.pt' etc.
-        if opt.bucket:
-            os.system('gsutil cp gs://%s/last.pt %s' % (opt.bucket, last))  # download from bucket
         chkpt = torch.load(weights, map_location=device)
 
         # load model
@@ -118,13 +116,14 @@ def train():
     #     # possible weights are 'yolov3.weights', 'yolov3-tiny.conv.15',  'darknet53.conv.74' etc.
     #     cutoff = load_darknet_weights(model, weights)
     if opt.transfer or opt.prebias:  # transfer learning edge (yolo) layers
-        nf = int(model.module_defs[model.yolo_layers[0] - 1]['filters'])  # yolo layer size (i.e. 255)
+        nf = [int(model.module_defs[x - 1]['filters']) for x in model.yolo_layers]  # yolo layer size (i.e. 255)
 
-        for p in optimizer.param_groups:
-            # lower param count allows more aggressive training settings: i.e. SGD ~0.1 lr0, ~0.9 momentum
-            p['lr'] *= 100
-            if p.get('momentum') is not None:  # for SGD but not Adam
-                p['momentum'] *= 0.9
+        if opt.prebias:
+            for p in optimizer.param_groups:
+                # lower param count allows more aggressive training settings: i.e. SGD ~0.1 lr0, ~0.9 momentum
+                p['lr'] = 0.1  # learning rate
+                if p.get('momentum') is not None:  # for SGD but not Adam
+                    p['momentum'] = 0.9
 
         for p in model.parameters():
             if opt.prebias and p.numel() == nf:  # train (yolo biases)
@@ -140,11 +139,11 @@ def train():
     # lf = lambda x: 1 - 10 ** (hyp['lrf'] * (1 - x / epochs))  # inverse exp ramp
     # scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lf)
     # scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=range(59, 70, 1), gamma=0.8)  # gradual fall to 0.1*lr0
-    # scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[round(epochs * x) for x in [0.8, 0.9]], gamma=0.1)
+    scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[round(epochs * x) for x in [0.8, 0.9]], gamma=0.1)
     # 带重启的余弦退火
     # scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max = 0.1*epochs, eta_min=0, last_epoch=-1)  
     # 余弦退火
-    scheduler = lr_scheduler.CosineAnnealingLR(optimizer, epochs)
+    # scheduler = lr_scheduler.CosineAnnealingLR(optimizer, epochs)
     # warmup加载器,支持各种scheduler
     scheduler = GradualWarmupScheduler(optimizer, 
                                        multiplier=hyp['multiplier'], 
@@ -176,24 +175,36 @@ def train():
         model.yolo_layers = model.module.yolo_layers  # move yolo layer indices to top level
 
     # Dataset
-    dataset = LoadImagesAndLabels(train_path,
-                                  img_size,
-                                  batch_size,
-                                  augment=True,
+    dataset = LoadImagesAndLabels(train_path,img_size,batch_size,
+                                  augment=False,
+                                #   augment=True,
                                   hyp=hyp,  # augmentation hyperparameters
                                   rect=opt.rect,  # rectangular training
                                   image_weights=opt.img_weights,
-                                  cache_labels=True if epochs > 10 else False,
-                                  cache_images=False if opt.prebias else opt.cache_images,
+                                  cache_labels= epochs > 10 ,
+                                  cache_images=opt.cache_images and not opt.prebias,
                                   )
 
     # Dataloader
+    batch_size = min(batch_size, len(dataset))
+    nw = min([os.cpu_count(), batch_size if batch_size > 1 else 0, 8])  # number of workers
     dataloader = torch.utils.data.DataLoader(dataset,
                                              batch_size=batch_size,
-                                             num_workers=min([os.cpu_count(), batch_size, 16]),
+                                             num_workers=nw, 
                                              shuffle=not opt.rect,  # Shuffle=True unless rectangular training is used
                                              pin_memory=True,
                                              collate_fn=dataset.collate_fn)
+    # Test Dataloader
+    if not opt.prebias:
+        testloader = torch.utils.data.DataLoader(LoadImagesAndLabels(test_path, opt.img_size, batch_size * 2,
+                                                                     hyp=hyp,
+                                                                     rect=opt.rect,
+                                                                     cache_labels=True,
+                                                                     cache_images=opt.cache_images),
+                                                 batch_size=batch_size * 2,
+                                                 num_workers=nw,
+                                                 pin_memory=True,
+                                                 collate_fn=dataset.collate_fn)
 
     # Start training
     model.nc = nc  # attach number of classes to model
@@ -203,10 +214,11 @@ def train():
     model_info(model, report='summary')  # 'full' or 'summary'
     nb = len(dataloader)
     maps = np.zeros(nc)  # mAP per class
-    # results = (0, 0, 0, 0, 0, 0, 0, 0)  # 'P', 'R', 'mAP', 'F1', 'val GIoU', 'val Objectness', 'val Classification'， 'val Regression'
     results = (0, 0, 0, 0, 0, 0,  0)  # 'P', 'R', 'mAP', 'F1', 'val GIoU', 'val Objectness', 'val Classification'， 'val Regression'
     t0 = time.time()
+    print('Using %g dataloader workers' % nw)
     print('Starting %s for %g epochs...' % ('prebias' if opt.prebias else 'training', epochs))
+
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
         model.epoch = epoch
@@ -226,19 +238,16 @@ def train():
             image_weights = labels_to_image_weights(dataset.labels, nc=nc, class_weights=w)
             dataset.indices = random.choices(range(dataset.n), weights=image_weights, k=dataset.n)  # rand weighted idx
 
-        # mloss = torch.zeros(5).to(device)  # mean losses
         mloss = torch.zeros(4).to(device)  # mean losses
-
-
         pbar = tqdm(enumerate(dataloader), total=nb)  # progress bar
         # 着重注意这个targets,已经经过resize到416,augment等变化了，不能直接映射到原图
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
             ni = i + nb * epoch  # number integrated batches (since train start)
-            imgs = imgs.to(device)
+            imgs = imgs.to(device)  # uint8 to float32, 0 - 255 to 0.0 - 1.0
             targets = targets.to(device)
 
             # Multi-Scale training
-            if multi_scale:
+            if opt.multi_scale:
                 if ni / accumulate % 10 == 0:  #  adjust (67% - 150%) every 10 batches
                     img_size = random.randrange(img_sz_min, img_sz_max + 1) * 32
                 sf = img_size / max(imgs.shape[2:])  # scale factor
@@ -267,6 +276,7 @@ def train():
 
             # Run model
             pred = model(imgs)
+
             # Compute loss
             loss, loss_items = compute_loss(pred, targets, model, hyp)
             if not torch.isfinite(loss):
@@ -275,6 +285,7 @@ def train():
 
             # Scale loss by nominal batch_size of 64
             # loss *= batch_size / 64
+            
             # Compute gradient
             if mixed_precision:
                 with amp.scale_loss(loss, optimizer) as scaled_loss:
@@ -309,20 +320,19 @@ def train():
         else:
             # Calculate mAP (always test final epoch, skip first 10 if opt.nosave)
             if not (opt.notest or (opt.nosave and epoch < 10)) or final_epoch:
-                if not epoch < 10: # 前部分epoch proposal太多，不计算
-                    with torch.no_grad():
-                        if epoch%hyp['test_interval']==0 and epoch!=0:
-                            results, maps = test.test(cfg,
-                                                    data,
-                                                    batch_size=1,
-                                                    img_size=opt.img_size,
-                                                    model=model,
-                                                    hyp=hyp,
-                                                    conf_thres=0.001 if final_epoch and epoch > 0 else 0.1,  # 0.1 for speed
-                                                    save_json=final_epoch and epoch > 0 and 'coco.data' in data)
-            # Write epoch results
+                if not epoch < hyp['test_from']: # 前部分epoch proposal太多，不计算
+                    if epoch%hyp['test_interval']==0 and epoch!=0:
+                        results, maps = test.test(cfg,
+                                                data,
+                                                batch_size=1,
+                                                img_size=opt.img_size,
+                                                model=model,
+                                                hyp=hyp,
+                                                conf_thres=0.001 if final_epoch else 0.1,  # 0.1 for speed
+                                                save_json=final_epoch and epoch > 0 and 'coco.data' in data,
+                                                dataloader=testloader)
+        # Write epoch results
         with open(results_file, 'a') as f:
-            # f.write(s + '%10.3g' * 8 % results + '\n')  # P, R, mAP, F1, test_losses=(GIoU, obj, cls)
             f.write(s + '%10.3g' * 7 % results + '\n')  # P, R, mAP, F1, test_losses=(GIoU, obj, cls)
 
         # Write Tensorboard results
@@ -334,9 +344,10 @@ def train():
                 tb_writer.add_scalar(title, xi, epoch)
 
         # Update best mAP
-        fitness = results[2]  # mAP
-        if fitness > best_fitness:
+        fitness = sum(results[4:])  # total loss
+        if fitness < best_fitness:
             best_fitness = fitness
+
 
         # Save training results
         save = (not opt.nosave) or (final_epoch and not opt.evolve) or opt.prebias
@@ -352,8 +363,6 @@ def train():
 
             # Save last checkpoint
             torch.save(chkpt, last)
-            if opt.bucket and not opt.prebias:
-                os.system('gsutil cp %s gs://%s' % (last, opt.bucket))  # upload to bucket
 
             # Save best checkpoint
             if best_fitness == fitness:
@@ -375,16 +384,20 @@ def train():
     print('%g epochs completed in %.3f hours.\n' % (epoch - start_epoch + 1, (time.time() - t0) / 3600))
     dist.destroy_process_group() if torch.cuda.device_count() > 1 else None
     torch.cuda.empty_cache()
+
     return results
+
 
 
 # python train.py  --adam --arc Fdefault --prebias  
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--accumulate', type=int, default=8, help='batches to accumulate before optimizing')
+    parser.add_argument('--accumulate', type=int, default=1, help='batches to accumulate before optimizing')
     parser.add_argument('--hyp', type=str, default='cfg/ICDAR/hyp.py', help='hyper-parameter path')
-    parser.add_argument('--cfg', type=str, default='cfg/ICDAR/yolov3_608_se.cfg', help='cfg file path')
-    parser.add_argument('--data', type=str, default='data/icdar_13+15.data', help='*.data file path')
+    parser.add_argument('--cfg', type=str, default='cfg/ICDAR/yolov3_608_dh_o8_ga.cfg', help='cfg file path')
+    # parser.add_argument('--data', type=str, default='data/icdar13+15.data', help='*.data file path')
+    parser.add_argument('--data', type=str, default='data/tiny.data', help='*.data file path')
+    # parser.add_argument('--data', type=str, default='data/single.data', help='*.data file path')
     parser.add_argument('--multi-scale', action='store_true', help='adjust (67% - 150%) img_size every 10 batches')
     parser.add_argument('--img-size', type=int, default=608, help='inference size (pixels)')
     parser.add_argument('--rect', action='store_true', help='rectangular training')
@@ -393,16 +406,16 @@ if __name__ == '__main__':
     parser.add_argument('--nosave', action='store_true', help='only save final checkpoint')
     parser.add_argument('--notest', action='store_true', help='only test final epoch')
     parser.add_argument('--evolve', action='store_true', help='evolve hyperparameters')
-    parser.add_argument('--bucket', type=str, default='', help='gsutil bucket')
     parser.add_argument('--img-weights', action='store_true', help='select training images by weight')
     parser.add_argument('--cache-images', action='store_true', help='cache images for faster training')
-    parser.add_argument('--weights', type=str, default='weights/pretrain.pt', help='initial weights')  # i.e. weights/darknet.53.conv.74
+    parser.add_argument('--weights', type=str, default='', help='initial weights')  # i.e. weights/darknet.53.conv.74
     parser.add_argument('--arc', type=str, default='defaultpw', help='yolo architecture')  # defaultpw, uCE, uBCE
     parser.add_argument('--prebias', action='store_true', help='transfer-learn yolo biases prior to training')
     parser.add_argument('--name', default='', help='renames results.txt to results_name.txt if supplied')
     parser.add_argument('--device', default='', help='device id (i.e. 0 or 0,1) or cpu')
     parser.add_argument('--adam', action='store_true', help='use adam optimizer')
     parser.add_argument('--var', type=float, help='debug variable')
+
     opt = parser.parse_args()
     opt.weights = last if opt.resume else opt.weights
     print(opt)
@@ -422,7 +435,6 @@ if __name__ == '__main__':
         try:
             # Start Tensorboard with "tensorboard --logdir=runs", view at http://localhost:6006/
             from torch.utils.tensorboard import SummaryWriter
-
             tb_writer = SummaryWriter()
         except:
             pass
@@ -432,8 +444,6 @@ if __name__ == '__main__':
     else:  # Evolve hyperparameters (optional)
         opt.notest = True  # only test final epoch
         opt.nosave = True  # only save final checkpoint
-        if opt.bucket:
-            os.system('gsutil cp gs://%s/evolve.txt .' % opt.bucket)  # download evolve.txt if exists
 
         for _ in range(1):  # generations to evolve
             if os.path.exists('evolve.txt'):  # if evolve.txt exists: select best hyps and mutate
@@ -466,8 +476,6 @@ if __name__ == '__main__':
             # Train mutation
             results = train()
 
-            # Write mutation results
-            print_mutation(hyp, results, opt.bucket)
 
             # Plot results
             # plot_evolution_results(hyp)

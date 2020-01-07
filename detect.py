@@ -13,7 +13,7 @@ from utils.nms.nms import non_max_suppression
 from utils.ICDAR.icdar_utils import xywha2icdar, zip_dir
 
 # 我自己写的还快些,FPS更高,性能没有下降
-def multi_detect(save_txt=True, save_img=False, hyp=None, multi_scale = False):
+def multi_detect(save_txt=True, save_img=True, hyp=None, multi_scale = False):
     img_size =  opt.img_size  # (320, 192) or (416, 256) or (608, 352) for (height, width)
     out, source, weights, half, view_img = opt.output, opt.source, opt.weights, opt.half, opt.view_img
     
@@ -179,7 +179,7 @@ def detect(save_txt = True, save_img = False, hyp = None):
     # Half precision
     half = half and device.type != 'cpu'  # half precision only supported on CUDA
     if half:
-        model.half()    # pytorch原生支持fp16训练
+        model.half()    # pytorch原生支持fp16
 
     # Set Dataloader
     vid_path, vid_writer = None, None
@@ -215,9 +215,7 @@ def detect(save_txt = True, save_img = False, hyp = None):
                 p, s, im0 = path[i], '%g: ' % i, im0s[i]
             else:
                 p, s, im0 = path, '', im0s
-
             save_path = str(Path(out) / Path(p).name)
-            
             # s 是最后检测打印的字符串，会通过字符串拼接逐渐添加项
             s += '%gx%g ' % img.shape[2:]  # s添加缩放后的图像尺度，如  320x416 
             if det is not None and len(det):
@@ -280,10 +278,12 @@ def detect(save_txt = True, save_img = False, hyp = None):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--hyp', type=str, default='cfg/ICDAR/hyp.py', help='hyper-parameter path')
-    parser.add_argument('--cfg', type=str, default='cfg/ICDAR/yolov3_608_se.cfg', help='cfg file path')
-    parser.add_argument('--data', type=str, default='data/icdar_13+15.data', help='coco.data file path')
-    parser.add_argument('--weights', type=str, default='weights/best.pt', help='path to weights file')
-    parser.add_argument('--source', type=str, default='data/ICDAR/test', help='source')  # input file/folder, 0 for webcam
+    parser.add_argument('--cfg', type=str, default='cfg/ICDAR/yolov3_608_dh_o8_ga.cfg', help='cfg file path')
+    parser.add_argument('--data', type=str, default='data/tiny.data', help='*.data file path')
+    # parser.add_argument('--data', type=str, default='data/icdar13+15.data', help='coco.data file path')
+    # parser.add_argument('--data', type=str, default='data/single.data', help='*.data file path')
+    parser.add_argument('--weights', type=str, default='weights/last.pt', help='path to weights file')
+    parser.add_argument('--source', type=str, default='data/tiny/test', help='source')  # input file/folder, 0 for webcam
     parser.add_argument('--output', type=str, default='output', help='output folder')  # output folder
     parser.add_argument('--img-size', type=int, default=608, help='inference size (pixels)')
     parser.add_argument('--conf-thres', type=float, default=0.5, help='object confidence threshold')
@@ -302,5 +302,5 @@ if __name__ == '__main__':
         if opt.multi_scale:
             multi_detect(hyp=hyp, multi_scale = True)
         else:
-            multi_detect(hyp=hyp)
-            # detect(hyp=hyp)
+            # multi_detect(hyp=hyp)
+            detect(hyp=hyp)

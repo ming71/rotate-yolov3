@@ -7,7 +7,9 @@ from utils.utils import *
 
 
 def get_yolo_layers(model):
-    return [i for i, x in enumerate(model.module_defs) if x['type'] == 'yolo']  # [82, 94, 106] for yolov3
+    # return [i for i, x in enumerate(model.module_defs) if x['type'] == 'yolo']  # [82, 94, 106] for yolov3
+    return [i for i, x in enumerate(model.module_defs) if x['type'] in ['detection','yolo']]  # [82, 94, 106] for yolov3
+
 
 
 # 做了两件事：
@@ -28,8 +30,8 @@ def create_grids(self, img_size=416, ng=(13, 13), device='cpu', type=torch.float
 
     # build wh gains
     self.anchor_vec = self.anchors.to(device)
-    self.anchor_vec[:,:2] /= self.stride
-    self.anchor_wh = self.anchor_vec.view(1, self.na, 1, 1, 3).to(device).type(type)    # torch.Size([1, 18, 1, 1, 3])
+    self.anchor_vec[:,:2] /= self.stride    #  只转化wh,角度不变
+    self.anchor_wha = self.anchor_vec.view(1, self.na, 1, 1, 3).to(device).type(type)    # torch.Size([1, 18, 1, 1, 3])
     self.ng = torch.Tensor(ng).to(device)
     self.nx = nx
     self.ny = ny
@@ -176,3 +178,5 @@ def attempt_download(weights):
                 os.system('rm ' + weights)  # remove partial downloads
 
         assert os.path.exists(weights), msg  # download missing weights from Google Drive
+
+    

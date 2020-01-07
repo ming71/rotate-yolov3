@@ -12,18 +12,6 @@ def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.5):
     min_wh = 2  # (pixels) minimum box width and height
     output = [None] * len(prediction)
     for image_i, pred in enumerate(prediction):
-        # Experiment: Prior class size rejection
-        # x, y, w, h = pred[:, 0], pred[:, 1], pred[:, 2], pred[:, 3]
-        # a = w * h  # area
-        # ar = w / (h + 1e-16)  # aspect ratio
-        # n = len(w)
-        # log_w, log_h, log_a, log_ar = torch.log(w), torch.log(h), torch.log(a), torch.log(ar)
-        # shape_likelihood = np.zeros((n, 60), dtype=np.float32)
-        # x = np.concatenate((log_w.reshape(-1, 1), log_h.reshape(-1, 1)), 1)
-        # from scipy.stats import multivariate_normal
-        # for c in range(60):
-        # shape_likelihood[:, c] =
-        #   multivariate_normal.pdf(x, mean=mat['class_mu'][c, :2], cov=mat['class_cov'][c, :2, :2])
 
         if prediction.numel() == 0: # for multi-scale filtered result , in case of 0
             continue
@@ -57,8 +45,8 @@ def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.5):
             for c in pred[:, -1].unique():
                 dc = pred[pred[:, -1] == c]
                 dc = dc[(-dc[:, 5]).argsort()]
-                # if len(dc)>100:   # 如果proposal实在太多，取100个
-                #     dc = dc[:100]
+                if len(dc)>100:   # 如果proposal实在太多，取100个
+                    dc = dc[:100]
 
                 # Non-maximum suppression
                 inds = r_nms(dc[:,:6], nms_thres)
@@ -140,7 +128,6 @@ def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.5):
 
             if len(det_max):
                 det_max = torch.cat(det_max)  # concatenate
-                import ipdb; ipdb.set_trace()
                 output[image_i] = det_max[(-det_max[:, 5]).argsort()]  # sort
             
 

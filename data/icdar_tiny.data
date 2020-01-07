@@ -1,0 +1,6 @@
+classes=1
+train=/py/datasets/ICDAR2015/yolo/tiny_icdar/train.txt
+valid=/py/datasets/ICDAR2015/yolo/tiny_icdar/val.txt
+names=data/icdar.name
+backup=backup/
+eval=coco

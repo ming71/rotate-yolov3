@@ -361,10 +361,6 @@ def wh_iou(box1, box2):
     return inter_area / union_area  # iou
 
 
-def get_yolo_layers(model):
-    bool_vec = [x['type'] == 'yolo' for x in model.module_defs]
-    return [i for i, x in enumerate(bool_vec) if x]  # [82, 94, 106] for yolov3
-
 
 def print_model_biases(model):
     # prints the bias neurons preceding each yolo layer

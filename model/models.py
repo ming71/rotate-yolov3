@@ -4,6 +4,8 @@ from utils.google_utils import *
 from utils.parse_config import *
 from utils.utils import *
 from model.model_utils import *
+from model.layer import  *
+from model.head import YOLOLayer, DualHead
 
 class Swish(nn.Module):
     def __init__(self):
@@ -11,6 +13,53 @@ class Swish(nn.Module):
 
     def forward(self, x):
         return x * torch.sigmoid(x)
+
+
+class Mish(nn.Module):
+    def __init__(self):
+        super(Mish, self).__init__()
+
+    def forward(self, x):
+        return x * torch.tanh(F.softplus(x))
+
+
+class Inception(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(Inception, self).__init__()
+        channels = int(out_channels/4)
+        self.branch3x3  = nn.Sequential(nn.Conv2d(in_channels, channels, kernel_size=1),
+                                        nn.Conv2d(channels,    channels, kernel_size=(1,3),padding=(0,1)))
+        self.branch5x5  = nn.Sequential(nn.Conv2d(in_channels, channels, kernel_size=1),
+                                        nn.Conv2d(channels,    channels, kernel_size=(1,5),padding=(0,2)))
+        self.branch7x7  = nn.Sequential(nn.Conv2d(in_channels, channels, kernel_size=1),
+                                        nn.Conv2d(channels,    channels, kernel_size=(1,7),padding=(0,3)))
+        self.branch3x3d = nn.Sequential(nn.Conv2d(in_channels, channels, kernel_size=1),
+                                        nn.Conv2d(channels,    channels, kernel_size=3, padding=3, dilation=3))
+        self.conv = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
+    
+    def forward(self, x):
+        branch3x3  = self.branch3x3(x)
+        branch5x5  = self.branch5x5(x)
+        branch7x7  = self.branch7x7(x)
+        branch3x3d = self.branch3x3d(x)
+        out = [branch3x3, branch5x5, branch7x7, branch3x3d]
+        x = torch.cat(out, 1)   # dim 1为channel维
+        x = Swish()(self.conv(x))
+        return x
+                            
+
+class SeparableConv2d(nn.Module):
+    def __init__(self,in_channels,out_channels,kernel_size=1,stride=1,padding=0,dilation=1,bias=False):
+        super(SeparableConv2d,self).__init__()
+
+        self.conv1 = nn.Conv2d(in_channels,in_channels,kernel_size,stride,padding,dilation,groups=in_channels,bias=bias)
+        self.pointwise = nn.Conv2d(in_channels,out_channels,1,1,0,1,1,bias=bias)
+    
+    def forward(self,x):
+        x = self.conv1(x)
+        x = self.pointwise(x)
+        return x
+
 
 
 class SELayer(nn.Module):
@@ -31,6 +80,32 @@ class SELayer(nn.Module):
         return x * y.expand_as(x)
 
 
+class GlobalAttention(nn.Module):
+    def __init__(self,in_channels,kernel_size=1,stride=1,dilation=1,bias=False,
+                 coef = 4):
+        super(GlobalAttention, self).__init__()
+        # 深度卷积实现通道区分的空间注意力
+        self.conv1 = nn.Conv2d(in_channels,in_channels,(1,kernel_size),stride,padding=(0,1),dilation=1,groups=in_channels,bias=bias)
+        self.conv2 = nn.Conv2d(in_channels,in_channels,(kernel_size,1),stride,padding=(1,0),dilation=1,groups=in_channels,bias=bias)
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(in_channels, in_channels * coef, bias=True),
+            Mish(),
+            nn.Linear(in_channels * coef, in_channels, bias=True),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        sa =  self.conv1(x)
+        sa =  torch.sigmoid_(self.conv2(sa))
+        x = x * sa
+        b, c, _, _ = x.size()
+        y = self.avg_pool(x).view(b, c)
+        y = self.fc(y).view(b, c, 1, 1)
+        return x * y.expand_as(x)
+        
+
+
 
 
 def create_modules(module_defs, arc, hyp):
@@ -42,32 +117,36 @@ def create_modules(module_defs, arc, hyp):
     module_list = nn.ModuleList()
     routes = []  # list of layers which route to deeper layes,融合的层，残差连接和特征融合层的index都存在这里
     yolo_index = -1
+    head_index = -1
 
     for i, mdef in enumerate(module_defs):
         modules = nn.Sequential()   # 读一个block就放一个Sequential，如果是卷积层就直接conv+bn+relu安排上；如果是route层，则Sequential空着提供站位符的作用
         #卷积层（75个）
         if mdef['type'] == 'convolutional':
-            bn = int(mdef['batch_normalize'])   #bn是bool开关，cfg中batch_normalize是1需要加bn层，为0不加（cfg是全加的）
+            bn = int(mdef['batch_normalize'])   # bn是bool开关，cfg中batch_normalize是1需要加bn层，为0不加（cfg是全加的）
             filters = int(mdef['filters'])      # 卷及核个数和尺寸
             kernel_size = int(mdef['size'])
             pad = (kernel_size - 1) // 2 if int(mdef['pad']) else 0
 
-            modules.add_module('Conv2d', nn.Conv2d(in_channels=output_filters[-1],
-                                                out_channels=filters,
-                                                kernel_size=kernel_size,
-                                                stride=int(mdef['stride']),
-                                                padding=pad,
-                                                bias=not bn))    # 注意有BN就不加bias，二者等效
+            modules.add_module('Conv2d', nn.Conv2d(in_channels = output_filters[-1],
+                                                out_channels = filters,
+                                                kernel_size = kernel_size,
+                                                stride = int(mdef['stride']),
+                                                padding = pad,
+                                                bias = not bn))    # 注意有BN就不加bias，二者等效
             if bn:
                 modules.add_module('BatchNorm2d', nn.BatchNorm2d(filters, momentum=0.1))
             if mdef['activation'] == 'leaky':   # TODO: activation study https://github.com/ultralytics/yolov3/issues/441
                 # modules.add_module('activation', nn.LeakyReLU(0.1, inplace=True))
                 modules.add_module('activation', nn.PReLU(num_parameters=1, init=0.10))  
                 # modules.add_module('activation', Swish())
+                # modules.add_module('activation', Mish())
 
         elif mdef['type'] == 'd-convolutional':
             bn = int(mdef['batch_normalize'])
             filters = int(mdef['filters'])
+            kernel_size = int(mdef['size'])
+            pad = (kernel_size - 1) // 2 if int(mdef['pad']) else 0
             modules.add_module('Conv2d', nn.Sequential())
             if bn:
                 modules.add_module('BatchNorm2d', nn.BatchNorm2d(filters, momentum=0.1))
@@ -75,6 +154,73 @@ def create_modules(module_defs, arc, hyp):
                 modules.add_module('activation', nn.LeakyReLU(0.1, inplace=True))
                 # modules.add_module('activation', nn.PReLU(num_parameters=1, init=0.10))   
                 # modules.add_module('activation', Swish())
+
+        elif mdef['type'] == 'dcn':
+            bn = int(mdef['batch_normalize'])
+            kernel_size = int(mdef['size'])
+            filters = int(mdef['filters'])
+            modules.add_module('dcn', DCN(in_channels = output_filters[-1], 
+                                        out_channels = filters, 
+                                        kernel_size = kernel_size, 
+                                        stride = int(mdef['stride']),
+                                        padding = (kernel_size - 1) // 2 if int(mdef['pad']) else 0, 
+                                        deformable_groups = 2)) 
+            if bn:
+                modules.add_module('BatchNorm2d', nn.BatchNorm2d(filters, momentum=0.1))
+            if mdef['activation'] == 'leaky':   # TODO: activation study https://github.com/ultralytics/yolov3/issues/441
+                # modules.add_module('activation', nn.LeakyReLU(0.1, inplace=True))
+                modules.add_module('activation', nn.PReLU(num_parameters=1, init=0.10))  
+                # modules.add_module('activation', Swish())
+
+        elif mdef['type'] == 'orconv':
+            nO = 8
+            filters = int(mdef['filters'])
+            kernel_size = int(mdef['size'])
+            modules.add_module('orconv', ORConv2d(in_channels = output_filters[-1] // nO,
+                                                  out_channels = filters // nO,
+                                                  arf_config = nO,
+                                                  kernel_size = kernel_size,
+                                                  stride = int(mdef['stride']),
+                                                  padding = (kernel_size - 1) // 2 if int(mdef['pad']) else 0
+                                                  ))  
+            if bn:
+                modules.add_module('BatchNorm2d', nn.BatchNorm2d(filters, momentum=0.1))
+            if mdef['activation'] == 'leaky':   # TODO: activation study https://github.com/ultralytics/yolov3/issues/441
+                # modules.add_module('activation', nn.LeakyReLU(0.1, inplace=True))
+                modules.add_module('activation', nn.PReLU(num_parameters=1, init=0.10))  
+                # modules.add_module('activation', Swish())
+
+
+        elif mdef['type'] == 'inception':
+            filters = int(mdef['filters'])
+            modules.add_module('inception',Inception(in_channels = output_filters[-1],
+                                                     out_channels = filters))
+
+        elif mdef['type'] == 'spconv' :
+            bn = int(mdef['batch_normalize'])
+            filters = int(mdef['filters'])
+            kernel_size = int(mdef['size'])
+            pad = (kernel_size - 1) // 2 if int(mdef['pad']) else 0
+            modules.add_module('spconv', SeparableConv2d(in_channels = output_filters[-1], 
+                                        out_channels = filters, 
+                                        kernel_size = kernel_size, 
+                                        stride = int(mdef['stride']),
+                                        padding = pad, 
+                                        bias = not bn
+                                        ))  
+            if bn:
+                modules.add_module('BatchNorm2d', nn.BatchNorm2d(filters, momentum=0.1))
+            if mdef['activation'] == 'leaky':   # TODO: activation study https://github.com/ultralytics/yolov3/issues/441
+                # modules.add_module('activation', nn.LeakyReLU(0.1, inplace=True))
+                modules.add_module('activation', nn.PReLU(num_parameters=1, init=0.10))                                          
+
+
+        elif mdef['type'] == 'ga':
+            modules = GlobalAttention(in_channels = output_filters[-1],
+                                      kernel_size = 3,
+                                      stride=1,
+                                      bias=True,
+                                      )
 
         elif mdef['type'] == 'maxpool':
             kernel_size = int(mdef['size'])
@@ -122,12 +268,11 @@ def create_modules(module_defs, arc, hyp):
             yolo_index += 1   # 从0开始
             mask_range = [int(i) for i in mdef['mask'].split('-')]
             mask = [i for i in range(mask_range[0],mask_range[1]+1)]
-            modules = YOLOLayer(anchors=mdef['anchors'][mask],  # anchor list，用mask提取特定的三个anchor尺度，eg.array([[116,90],[156,198],[373,326]])
-                                nc=int(mdef['classes']),  # number of classes,eg.20
+            modules = YOLOLayer(anchors = mdef['anchors'][mask],  # anchor list，用mask提取特定的三个anchor尺度，eg.array([[116,90],[156,198],[373,326]])
+                                nc = int(mdef['classes']),  # number of classes,eg.20
                                 hyp = hyp,
                                 yolo_index=yolo_index,  # 0, 1 or 2三层
                                 arc=arc)  # yolo architecture
-
             # Initialize preceding Conv2d() bias (https://arxiv.org/pdf/1708.02002.pdf section 3.3)
             try:
                 if arc == 'defaultpw' or arc == 'Fdefaultpw':  # default with positive weights
@@ -144,8 +289,8 @@ def create_modules(module_defs, arc, hyp):
                     b = [0, -6.5]
                 elif arc == 'uFCE':  # unified FocalCE (64 cls, 1 background + 80 classes)
                     b = [7.7, -1.1]
-                # 提取yolo层之前那个卷积的bias，torch.Size([3, 8])，3是anchor数目，8=5(xywhc,c为出现物体的置信度confidence)+3(类别数)
-                bias = module_list[-1][0].bias.view(len(mask), -1)  # 255 to 3x85  
+
+                bias = module_list[-1][0].bias.view(len(mask), -1)  # 255 to 3x85
                 bias[:, 5]  += b[0] - bias[:, 5 ].mean()  # obj
                 bias[:, 6:] += b[1] - bias[:, 6:].mean()  # cls
                 # bias = torch.load('weights/yolov3-spp.bias.pt')[yolo_index]  # list of tensors [3x85, 3x85, 3x85]
@@ -153,6 +298,19 @@ def create_modules(module_defs, arc, hyp):
                 # utils.print_model_biases(model)
             except:
                 print('WARNING: smart bias initialization failure.')
+        
+                                
+        elif mdef['type'] == 'head':
+            head_index += 1
+            nO = int(mdef['nO'])
+            modules = DualHead(in_channels = output_filters[-1],
+                                cls_feat_channels = output_filters[-1] // 2,
+                                reg_feat_channels = output_filters[-1] // 2,
+                                num_classes=int(mdef['classes']),
+                                num_regress = 5,
+                                num_anchors = int(mdef['na']),
+                                nO = nO,
+                                )
 
         else:
             print('Warning: Unrecognized Layer Type: ' + mdef['type'])
@@ -164,67 +322,6 @@ def create_modules(module_defs, arc, hyp):
     return module_list, routes   # 最终返回的是modulelist和融合的通道位置
 
 
-
-
-
-class YOLOLayer(nn.Module):
-    def __init__(self, anchors, nc, yolo_index, arc, hyp): 
-        super(YOLOLayer, self).__init__()
-        self.anchors = torch.Tensor(anchors)
-        self.na = len(anchors)  # number of anchors (3)
-        self.nc = nc  # number of classes (80)
-        self.nx = 0  # initialize number of x gridpoints    
-        self.ny = 0  # initialize number of y gridpoints
-        self.arc = arc
-        self.hyp = hyp
-        self.yolo_index = yolo_index  # idx: 0 1 2 ...
-
-
-    def forward(self, p, img_size, var=None):   # p是特征图，img_size是缩放并padding后的尺寸如torch.Size([320, 416])（用来确定原图和特征图的对应位置）
-        bs, ny, nx = p.shape[0], p.shape[-2], p.shape[-1]   # ny nx是特征图的高和宽
-        if (self.nx, self.ny) != (nx, ny):
-            create_grids(self, img_size, (nx, ny), p.device, p.dtype)   # 缩放anchor到特征图尺寸;用特征图像素编码grid cell
-
-        # p.view(bs, 255, 13, 13) -- > (bs, 3, 13, 13, 85)  # (bs, anchors, grid, grid, classes + xywh)
-        p = p.view(bs, self.na, self.nc + 6, self.ny, self.nx).permute(0, 1, 3, 4, 2).contiguous()  # prediction
-
-        # self继承自nn.Module，其自带属性self.training且默认为True，但是在model.eval()会被设置成False
-        if self.training:
-            # 如果是training,直接返回yolo fp (bs, anchors, grid, grid, classes + xywh)
-            return p
-        
-        else:   # inference   # 不止返回inference结果还有train的
-            # s = 1.5  # scale_xy  (pxy = pxy * s - (s - 1) / 2)
-            io = p.clone()  # inference output
-            io[..., 0:2] = torch.sigmoid(io[..., 0:2]) + self.grid_xy  # xy ：预测的偏移 + grid cell id
-            io[..., 2:4] = torch.exp(io[..., 2:4]) * self.anchor_wh[...,:-1]    # wh yolo method （加exp化为正数）；wh预测的是一个比例，基准是anchor
-            io[..., 4]   = torch.atan(io[..., 4]) + self.anchor_wh[...,-1]
-            # 从特征图放大到原图尺寸
-            io[..., :4] *= self.stride
-            # 整体缩放法
-            # io[..., 2:4] /= self.hyp['context_factor']    
-            # 取h短边合理缩放
-            io[..., 3] /= self.hyp['context_factor']
-            io[..., 2] -= io[..., 3]*(self.hyp['context_factor']-1)
-
-            if 'default' in self.arc:  # seperate obj and cls
-                # 将obj得分和各类别的得分进行sigmoid处理
-                torch.sigmoid_(io[..., 5:])     # in-place操作，慎用
-            elif 'BCE' in self.arc:  # unified BCE (80 classes)
-                torch.sigmoid_(io[..., 6:])
-                io[..., 5] = 1
-            elif 'CE' in self.arc:  # unified CE (1 background + 80 classes)
-                io[..., 5:] = F.softmax(io[..., 4:], dim=4)
-                io[..., 5] = 1
-
-            if self.nc == 1:
-                io[..., 6] = 1  # single-class model https://github.com/ultralytics/yolov3/issues/235
-
-            # 注意：yolo层返回两个张量
-            #   - 一个是三个维度的(分类和置信度得分归一化了)         [1, 507, 85]
-            #   - 一个是输入reshape分分离出不同类别得分而已    [1, 3, 13, 13, 85]
-            # reshape from [1, 3, 13, 13, 85] to [1, 507, 85]
-            return io.view(bs, -1, 6 + self.nc), p
 
 
 class Darknet(nn.Module):
@@ -248,10 +345,13 @@ class Darknet(nn.Module):
 
         # zip的是配置文件和占位的模型层（注：cfg文件有108个block，除去第一个net超参数外，剩下的107个在self.module_defs中，和 self.module_list一一对应可以zip）
         for i, (mdef, module) in enumerate(zip(self.module_defs, self.module_list)):
-            # print(i)
+            # print(i,mdef['type'])
+            # print(x.shape)
             mtype = mdef['type']
             # 大多数层定义好了forward，直接调用就行，如下面的第一个接口
-            if mtype in ['convolutional', 'upsample', 'maxpool','d-convolutional','se']:
+            if mtype in ['convolutional', 'upsample', 'maxpool',
+                         'd-convolutional','se', 'dcn', 'spconv', 
+                         'ga', 'orconv', 'inception']:
                 if 'weight_from' in mdef.keys():
                     shared_weight = int(mdef['weight_from']) 
                     bn = int(mdef['batch_normalize'])   
@@ -281,10 +381,13 @@ class Darknet(nn.Module):
             elif mtype == 'shortcut':
                 x = x + layer_outputs[int(mdef['from'])]    # 残差连接，加和其上一层-1（当前层不是-1执行最后才append）和往上数第三层(-3)
             
+            elif mtype == 'head':
+                x = module(x) 
+
             elif mtype == 'yolo':
                 # # 注意：yolo层return的有两个张量,x是一个包含两种张量的tuple
                 x = module(x, img_size) 
-                output.append(x)                                                  
+                output.append(x)    
             layer_outputs.append(x if i in self.routes else [])     # 添加所有route层的输出
 
         if self.training:
@@ -292,6 +395,7 @@ class Darknet(nn.Module):
             return output
        
         else:
+            output = output[:3] # 对于matrix feature只取前面的主分支三个尺度
             # 每个yolo层输出一个2张量的tuple，三个yolo最后的output为[(a1,a2)),(b1,b2),(c1,c2)]的形式，unzip后为[(a1,b1,c1),(a2,b2,c2)]
             # [(a1,b1,c1),(a2,b2,c2)]分别是io和p;前者是3维度，后者5维度
             io, p = list(zip(*output))  # inference output, training output
