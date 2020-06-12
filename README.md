@@ -1,14 +1,11 @@
 ## Rotated-Yolov3
 Rotating target detection implemented with yolov3.
-Debuging....
 
-## Problems
-* **low recall**(<0.5)
-* <u>angle regression offset</u>
-* far from real-time cre.(20fps)
+Not good enough yet, reach only Hmean 70 on ICDAR15 dataset. 
 
+I'll not keep updating here, but PRs are welcomed. Better detector for rotation object detection will be published in my repo as soon as possible(that's why I deprecated ryolo). 
 
-## Output
-<div align=center><img  src="https://github.com/ming71/rotate-yolo/blob/master/output/100000748.jpg"/></div>
-<div align=center><img  src="https://github.com/ming71/rotate-yolo/blob/master/output/100000886.jpg"/></div>
-<div align=center><img  src="https://github.com/ming71/rotate-yolo/blob/master/output/log.png"/></div>
+## Some Results
+
+<div align=center><img  src="https://github.com/ming71/rotate-yolo/blob/master/1.jpg"/></div>
+<div align=center><img  src="https://github.com/ming71/rotate-yolo/blob/master/2.jpg"/></div>
