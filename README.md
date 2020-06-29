@@ -1,3 +1,5 @@
+I'll release latest code and training pipeline as I return school at request, cause codes are left there, this repo is just a backup commit.
+
 ## Rotated-Yolov3
 Rotating target detection implemented with yolov3.
 
@@ -16,6 +18,7 @@ I'll not keep updating here, but PRs are welcomed. Better detector for rotation 
 ## Notice  
 Feel free to contact me if you have any question when use this code, cause maybe I don't know either.(too long the last time I make modification on it, and I don't think yolo is a good choice for arbitrary orientation object detection.)  
 I'll release a stronger detector later.  
+
 
 ## Some Results
 <div align=center><img  src="https://github.com/ming71/rotate-yolo/blob/master/1.jpg"/></div>
