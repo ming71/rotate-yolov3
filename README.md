@@ -1,7 +1,7 @@
-I'll release latest code and training pipeline as I return school at request, cause codes are left there, this repo is just a backup commit.
+I'll release latest code and training pipeline as I return school at request, cause codes are left there, this repo is just **a backup commit**.
 
 ## Rotated-Yolov3
-Rotating target detection implemented with yolov3.
+Rotaion object detection implemented with yolov3.
 
 Not good enough yet, reach only Hmean 70 on ICDAR15 dataset. 
 
@@ -42,4 +42,8 @@ Following questions are frequently mentioned. And if you have something unclear,
 * Q: Where is ORN codes?
 
   A: I'll release the whole codebase as I return school, and this [repo](https://github.com/ming71/CUDA/tree/master/ORN) may help.
+
+* Q: I cannot reproduce the result you reported(80 mAP for hrsc and 0.7 F1 for IC15).
+* A: Refer to my reply [here](https://github.com/ming71/rotate-yolov3/issues/14#issuecomment-663328130). This is only a backup repo, the overall model is no problem, but **direct running does not necessarily guarantee good results**, cause it is not the latest version, and some parameters may have problems, you need to adjust some details and parameter settings yourself. 
+  I will upload the complete executable code as soon as I return to school in September (if lucky).
 
