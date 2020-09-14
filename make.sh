@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 cd model/layer/ORN
-./build.sh
+./make.sh
 
 cd ../../layer/DCNv2
-./build.sh
+./make.sh
 
 cd ../../../utils/nms
-./build.sh
+./make.sh

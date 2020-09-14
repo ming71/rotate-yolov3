@@ -1,6 +1,0 @@
-classes=1
-train=/py/datasets/HRSC2016/yolo-dataset/single-train.txt
-valid=/py/datasets/HRSC2016/yolo-dataset/single-train.txt
-names=data/hrsc.name
-backup=backup/
-eval=coco

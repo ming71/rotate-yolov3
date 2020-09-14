@@ -116,139 +116,6 @@ class GradualSampler(object):
 
 
 
-def _expand_binary_labels(labels, label_weights, label_channels):
-    bin_labels = labels.new_full((labels.size(0), label_channels), 0)
-    inds = torch.nonzero(labels >= 1).squeeze()
-    if inds.numel() > 0:
-        bin_labels[inds, labels[inds] - 1] = 1
-    bin_label_weights = label_weights.view(-1, 1).expand(
-        label_weights.size(0), label_channels)
-    return bin_labels, bin_label_weights
-
-
-class GHMC_Loss(nn.Module):
-    def __init__(
-            self,
-            bins=10,
-            momentum=0,
-            use_sigmoid=True,
-            loss_weight=1.0):
-        super(GHMC_Loss, self).__init__()
-        self.bins = bins
-        self.momentum = momentum
-        self.edges = [float(x) / bins for x in range(bins+1)]
-        self.edges[-1] += 1e-6
-        if momentum > 0:
-            self.acc_sum = torch.cuda.FloatTensor(bins)#[0.0 for _ in range(bins)]
-        self.use_sigmoid = use_sigmoid
-        self.loss_weight = loss_weight
-
-    def forward(self, pred, target, label_weight, *args, **kwargs):
-        """ Args:
-        pred [batch_num, class_num]:
-            The direct prediction of classification fc layer.
-        target [batch_num, class_num]:
-            Binary class target for each sample.
-        label_weight [batch_num, class_num]:
-            the value is 1 if the sample is valid and 0 if ignored.
-        """
-        if not self.use_sigmoid:
-            raise NotImplementedError
-        # the target should be binary class label
-        if pred.dim() != target.dim():
-            target, label_weight = _expand_binary_labels(target, label_weight, pred.size(-1))
-        target, label_weight = target.float(), label_weight.float()
-        edges = self.edges
-        mmt = self.momentum
-        weights = torch.zeros_like(pred)
-
-        # gradient length
-        g = torch.abs(pred.sigmoid().detach() - target)
-
-        valid = label_weight > 0
-        tot = max(valid.float().sum().item(), 1.0)  # 总数
-        n = 0  # n valid bins
-        for i in range(self.bins):
-            # 将target和计算sigmoid后得到的pred差值0-1划分成bin个区间
-            inds = (g >= edges[i]) & (g < edges[i+1]) & valid  # 每个梯度长度是否落入当前的bin内,boolean 
-            num_in_bin = inds.sum().item()  # 统计梯度落在某个bin上的个数
-            if num_in_bin > 0:
-                if mmt > 0:
-                    self.acc_sum[i] = mmt * self.acc_sum[i] \
-                        + (1 - mmt) * num_in_bin
-                    weights[inds] = tot / self.acc_sum[i]
-                else:
-                    weights[inds] = tot / num_in_bin    # 对在当前bin内的更新权重
-                n += 1
-        if n > 0:
-            weights = weights / n
-        loss = F.binary_cross_entropy_with_logits(
-            pred, target, weights, reduction='sum') / tot
-        return loss * self.loss_weight
-
-
-class GHMR_Loss(nn.Module):
-    def __init__(
-            self,
-            mu=0.02,
-            bins=10,
-            momentum=0,
-            loss_weight=1.0):
-        super(GHMR_Loss, self).__init__()
-        self.mu = mu
-        self.bins = bins
-        self.edges = [float(x) / bins for x in range(bins+1)]
-        self.edges[-1] = 1e3
-        self.momentum = momentum
-        if momentum > 0:
-            self.acc_sum = torch.cuda.FloatTensor(bins)#[0.0 for _ in range(bins)]
-        self.loss_weight = loss_weight
-
-    def forward(self, pred, target, label_weight, avg_factor=None):
-        """ Args:
-        pred [batch_num, 4 (* class_num)]:
-            The prediction of box regression layer. Channel number can be 4 or
-            (4 * class_num) depending on whether it is class-agnostic.
-        target [batch_num, 4 (* class_num)]:
-            The target regression values with the same size of pred.
-        label_weight [batch_num, 4 (* class_num)]:
-            The weight of each sample, 0 if ignored.
-        """
-        mu = self.mu
-        edges = self.edges
-        mmt = self.momentum
-
-        # ASL1 loss
-        diff = pred - target
-        loss = torch.sqrt(diff * diff + mu * mu) - mu
-
-        # gradient length
-        g = torch.abs(diff / torch.sqrt(mu * mu + diff * diff)).detach()
-        weights = torch.zeros_like(g)
-
-        valid = label_weight > 0
-        tot = max(label_weight.float().sum().item(), 1.0)
-        n = 0  # n: valid bins
-        for i in range(self.bins):
-            inds = (g >= edges[i]) & (g < edges[i+1]) & valid
-            num_in_bin = inds.sum().item()
-            if num_in_bin > 0:
-                n += 1
-                if mmt > 0:
-                    self.acc_sum[i] = mmt * self.acc_sum[i] \
-                        + (1 - mmt) * num_in_bin
-                    weights[inds] = tot / self.acc_sum[i]
-                else:
-                    weights[inds] = tot / num_in_bin
-        if n > 0:
-            weights /= n
-
-        loss = loss * weights
-        loss = loss.sum() / tot
-        return loss * self.loss_weight
-
-
-
 def h_iou_loss(input,target):
     iou = wh_iou(input, target)
     loss = 1.0 - iou
@@ -277,6 +144,8 @@ class FocalLoss(nn.Module):
             return loss.sum()
         else:  # 'none'
             return loss
+
+
 
 
 
@@ -314,34 +183,9 @@ def build_targets(model, targets, hyp):
         gwha[:,:-1] *= ng        # 缩放到当前yolo层尺寸上
         if nt:
             # shape: [num_anchor, num_boxes],所有gt和当前yolo层上anchor的iou
+
             # Method1:计算anchor正框的iou
             all_ious = torch.stack([wh_iou(x, gwha[:,:-1]) for x in anchor_vec[:,:-1]], 0) # (num_anchors,gts)-->(72,15)
-
-            # Method2:计算斜框的iou
-            # _anchor_vec = torch.cat((ft((0,0)).repeat(len(anchor_vec),1),anchor_vec),1) # torch.Size([18, 8]) 8=xyxyxyxy
-            # _tar_anchors = torch.cat((ft((0,0)).repeat(len(gwha),1),gwha),1)   #torch.Size([7, 8]) 7=len(t) in a bs
-            # _ious = torch.stack([skew_bbox_iou(x,_tar_anchors) for x in _anchor_vec],0)  # ious.shape: (num_anchors, num_tragets) num_anchors = 36
-            # print((_ious>0.5).sum())
-            # # anchor和gt的可视化，观察iou是否有误，及时调整anchor超参数
-            # _anchors  = [get_rotated_coors(x) for x in _anchor_vec]
-            # _tars = [get_rotated_coors(x) for x in _tar_anchors]
-            # strides = [32,16,8]
-            # stride = strides[id]
-            # img = np.zeros((512*2,512*2,3), np.uint8)
-            # img.fill(255)
-            # for ans in _anchors:
-            #     ans *= stride*2  # 额外放大一倍便于观察
-            #     ans += 512  # 移到中间
-            #     ans = ans.cpu().numpy().reshape(4,2).astype(np.int32)
-            #     img = cv2.polylines(img,[ans],True,(0,0,255),1)
-            #     for tars in _tars:
-            #         tars *= stride*2
-            #         tars += 512
-            #         tars = tars.cpu().numpy().reshape(4,2).astype(np.int32)
-            #         img = cv2.polylines(img,[tars],True,(255,0,0),1)
-            #     cv2.imshow('anchor_show', img)
-            # cv2.waitKey(0)
-            # cv2.destroyAllWindows()
 
             use_best_anchor = False
             if use_best_anchor:
@@ -357,16 +201,17 @@ def build_targets(model, targets, hyp):
                 ious = all_ious.view(-1)  # use all ious  展开成[num_boxes*na]的行向量
                 square_ious.append(ious)
 
-
         # Indices 这个变量只提供索引信息: b-图片index ; a-anchor索引 ; gj,gi grid cell的索引
         b, c = t[:, :2].long().t()  # target image, class 分别是图像index和类别id分离出来,便于索引
-        gxy = t[:, 2:4] * ng  # grid x, y  将选出的gt box的xy缩放   到当前遍历yolo层的特征图尺寸上去
+        gxy = t[:, 2:4] * ng  # grid x, y  将选出的gt box的xy缩放到当前遍历yolo层的特征图尺寸上去
         gi, gj = gxy.long().t()  # grid x, y indices gi gj就是gxy分别取整得到的grid cell编号
         indices.append([b, a, gj, gi])
 
         # gt_convert   
         gxy -= gxy.floor()  # xy  # 在一个grid cell内的坐标(即原坐标减去grid cell的位置) 
-        # t_gwha = gwha.clone()   # 留个备份后面reject用的到
+        t_gwha = gwha.clone()   # 留个备份后面reject用的到
+        # gwha[:,:2] = torch.log(gwha[:,:2] / anchor_vec[a][:,:2]) 
+        # gwha[:, 2] = torch.tan(gwha[:, 2] - anchor_vec[a][:, 2])
         tbox.append(torch.cat((gxy, gwha), 1))  # xywha (grids)  tbox编码xywa (xy是一个cell内的偏移)
         av.append(anchor_vec[a])  # anchor vec
 
@@ -377,13 +222,12 @@ def build_targets(model, targets, hyp):
 
     # reject anchors below iou_thres 
     # 实现方法是mask矩阵j，shape为(num_layers, nt * 72); 正样本1 负样本0 ign -1
-    reject = True   # 训练时筛掉和gt的iou过小, 以及角度差太大（最多阈值0.5pi，确保回归范围无错）的anchor
+    reject = True   # 训练时筛掉和gt的iou过小, 以及角度差太大（至少阈值0.5pi，确保回归范围无错）的anchor
     if reject and nt :
-        # 角度不分layer都是一样的,所以不用遍历yolo_layer
-        angle_offset = abs(gwha[:,-1] - anchor_vec[:,-1].reshape((-1, 1)).repeat([1,nt]).reshape(-1))   # 角度mask没必要区分layer，不同layer的angle一样，只是尺度大小不同
-        angle_offset[torch.where(angle_offset > 0.5*math.pi)] = math.pi - angle_offset[torch.where(angle_offset > 0.5*math.pi)]
+        angle_offset = abs(t_gwha[:,-1] - anchor_vec[:,-1].view((-1, 1)).repeat([1,nt]).view(-1))   # 角度mask没必要区分layer，不同layer的angle一样，只是尺度大小不同
+        angle_offset[angle_offset > 0.5*math.pi] = math.pi - angle_offset[angle_offset > 0.5*math.pi]
         j_iou = [sq_iou >model.hyp['iou_t'] for sq_iou in square_ious] # iou要区分layer计算
-        j_a = angle_offset <  model.hyp['ang_t']  
+        j_a = angle_offset <  model.hyp['ang_t']  # 角度不分layer都是一样的
         j = [ju * j_a for ju in j_iou] 
         # anchor补漏:没有anchor分配的gt选择最大iou的anchor
         gt_j = torch.stack([juu.reshape(all_ious.shape).max(0)[0] for juu in j],0).t() # (nt,yolo_layer_num)
@@ -401,6 +245,7 @@ def build_targets(model, targets, hyp):
         # mask = torch.where(mask,torch.cuda.LongTensor([1]),torch.cuda.LongTensor([-1]))   # 采用-1 0 1 mask
 
         # anchor masking 只挑出正样本
+        assert j[0].sum()+j[1].sum()+j[2].sum() >= nt, 'something wrong at target building'
         for lid, mask_layer in enumerate(j):
             tbox[lid] = tbox[lid][mask_layer]
             tcls[lid] = tcls[lid][mask_layer]
@@ -417,7 +262,6 @@ def build_targets(model, targets, hyp):
 # build_targets 完成了两件事：
 # - 将target标注缩放放到三个yolo层上
 # - 选出各个yolo层上和label box iou较大的anchor将其输出（通过indices），用于回归/计算loss
-# -  输出的tbox:xy是0-1的浮点偏移；wh是缩放到特征图的真实值(未经过log)；a是真实theta
 # targets 是[num_boxes,7](当前batch的)的gt张量
 def compute_loss(p, targets, model, hyp):  # predictions, targets, model
     ft = torch.cuda.FloatTensor if p[0].is_cuda else torch.Tensor
@@ -431,12 +275,11 @@ def compute_loss(p, targets, model, hyp):  # predictions, targets, model
     # Define criteria
     # pos_weight是解决不平衡问题参数,在loss中作为正目标的损失函数系数,>1会减小错误负样本的权重
     # 该参数的len个和类别相同,这里是cls和obj_conf的BCE所以一维参数就行
-    BCEcls = nn.BCEWithLogitsLoss(pos_weight=ft([h['cls_pw']]), reduction='mean')
-    BCEobj = nn.BCEWithLogitsLoss(pos_weight=ft([h['obj_pw']]), reduction='mean')
+    BCEcls = nn.BCEWithLogitsLoss(pos_weight=ft([h['cls_pw']]))
+    BCEobj = nn.BCEWithLogitsLoss(pos_weight=ft([h['obj_pw']]))
     BCE = nn.BCEWithLogitsLoss()
     CE = nn.CrossEntropyLoss()      # weight=model.class_weights
     SM = nn.SmoothL1Loss(reduction='mean')
-    GHMC = GHMC_Loss(bins=30, momentum=0.5)
 
     if 'F' in arc:  # add focal loss
         g = h['fl_gamma']
@@ -455,7 +298,6 @@ def compute_loss(p, targets, model, hyp):  # predictions, targets, model
         tobj = torch.zeros_like(pi[..., 0])  # target obj 尺度和yolo层特征图一致,只是去掉channel  eg. torch.Size([2, 36, 13, 13])
         mask = sampler(tobj, indices[i])
         # mask = sampler(tobj, indices[i], model.epoch)
-
         # Compute losses
         nb = len(b)
         num_anchors = len(a)
@@ -465,20 +307,20 @@ def compute_loss(p, targets, model, hyp):  # predictions, targets, model
             # pi: [bs, na, f_w, f_h, 8]   ps: [num_box , 7]  7 = xywha + obj +classses
             ps = pi[b, a, gj, gi]  # prediction subset corresponding to targets
             tobj[b, a, gj, gi] = 1.0  # obj 因为在这些位置一定有物体,所以gt的obj conf =1,取余gt为0
-            # ps[:, 2:4] = torch.sigmoid(ps[:, 2:4])  # wh power loss (uncomment)
-
-            pxy = torch.sigmoid(ps[:, 0:2])  # pxy = pxy * s - (s - 1) / 2,  s = 1.5  (scale_xy)
-            pwh = torch.exp(ps[:, 2:4]).clamp(max=1E3) * anchor_vec[i][:,:-1]
-            pa  = torch.atan(ps[:,4]) + anchor_vec[i][:,-1]
-            pbox = torch.cat((pxy, pwh, pa.unsqueeze(1)) , 1)       
 
         # 回归定位：
             ## iou_loss 都是特征图尺寸下的计算
+            ng, anchor_vec = model.module_list[model.yolo_layers[i]].ng, model.module_list[model.yolo_layers[i]].anchor_vec
+            pxy = torch.sigmoid(ps[:, 0:2])  # pxy = pxy * s - (s - 1) / 2,  s = 1.5  (scale_xy)
+            pwh = torch.exp(ps[:, 2:4]).clamp(max=1E3) * anchor_vec[a][:,:-1]
+            pa  = torch.atan(ps[:,4]) + anchor_vec[a][:,-1]
+            pbox = torch.cat((pxy, pwh, pa.unsqueeze(1)) , 1) 
+
             if pbox.dtype == torch.float16:   # apex适配gt的类型
                 if tbox[i].dtype == torch.float16:  pass
                 else:  tbox[i] = tbox[i].half()
             liou = h_iou_loss(tbox[i][:,2:4], pbox[:,2:4]).mean()
-            lreg = lreg + SM(pbox[:,[0,1]],tbox[i][:,[0,1]]) + 2*SM(pbox[:,4],tbox[i][:,4]) + liou * h['giou'] 
+            lreg = lreg+ SM(pbox[:,[0,1]],tbox[i][:,[0,1]]) + 2*SM(pbox[:,4],tbox[i][:,4]) + liou * h['giou']  
             # lreg = lreg +  SM(pbox,tbox[i])
                 
 
@@ -504,9 +346,6 @@ def compute_loss(p, targets, model, hyp):  # predictions, targets, model
         if 'default' in arc:  # seperate obj and cls
             if mask.sum()!=0:
                 lobj += BCEobj(pi[..., 5][mask], tobj[mask])  # obj loss
-                # print(BCEobj(pi[..., 5][mask], tobj[mask]))
-                # print('lobj%f' % lobj)
-                # lobj += GHMC(pi[..., 5], tobj, mask)
                 
         elif 'BCE' in arc:  # unified BCE (80 classes)
             t = torch.zeros_like(pi[..., 6:])  # targets

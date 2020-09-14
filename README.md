@@ -1,11 +1,12 @@
-I'll release latest code and training pipeline as I return school at request, cause codes are left there, this repo is just **a backup commit**.
-
 ## Rotated-Yolov3
+
 Rotaion object detection implemented with yolov3.
 
-Not good enough yet, reach only Hmean 70 on ICDAR15 dataset. 
+## Update
 
-I'll not keep updating here, but PRs are welcomed. Better detector for rotation object detection will be published in my repo as soon as possible(that's why I deprecated ryolo). 
+The latest code has been uploaded, unfortunately, due to my negligence, I incorrectly modified some parts of the code and did not save the historical version last year, which made it hard to reproduce the previous high performance. It is tentatively that there are some problems in the loss calculation part. 
+
+But I found from the experimental results left last year that yolov3 is suitable for rotation detection. After using several tricks (attention, ORN, Mish, and etc.), it have achieved good performance. More previous experiment results can be found [here](https://github.com/ming71/rotate-yolo/blob/master/experiment).
 
 ## Support 
 * SEBlock  
@@ -18,14 +19,11 @@ I'll not keep updating here, but PRs are welcomed. Better detector for rotation 
 * Mish/Swish
 * GlobalAttention
 
-## Notice  
-Feel free to contact me if you have any question when use this code, cause maybe I don't know either.(too long the last time I make modification on it, and I don't think yolo is a good choice for arbitrary orientation object detection.)  
-I'll release a stronger detector later.  
+## Detection Results
 
+The detection results from rotated yolov3 left over last year:
 
-## Some Results
-<div align=center><img  src="https://github.com/ming71/rotate-yolo/blob/master/1.jpg"/></div>
-<div align=center><img  src="https://github.com/ming71/rotate-yolo/blob/master/2.jpg"/></div>
+<div align=center><img  src="https://github.com/ming71/rotate-yolo/blob/master/demo.png"/></div>
 
 ## Q&A
 
@@ -47,3 +45,5 @@ Following questions are frequently mentioned. And if you have something unclear,
 * A: Refer to my reply [here](https://github.com/ming71/rotate-yolov3/issues/14#issuecomment-663328130). This is only a backup repo, the overall model is no problem, but **direct running does not necessarily guarantee good results**, cause it is not the latest version, and some parameters may have problems, you need to adjust some details and parameter settings yourself. 
   I will upload the complete executable code as soon as I return to school in September (if lucky).
 
+## In the end
+There is no need or time to maintain the codebase to reproduce the previous performance. If you are interested in this work, you are welcome to fix the bugs in this codebase. If there is a need, models trained with good performance last year are available. I'll reimplement the rotation yolov4 or yolov5 if time permitting  in the future.

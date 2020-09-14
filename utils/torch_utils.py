@@ -14,31 +14,32 @@ def init_seeds(seed=0):
         torch.backends.cudnn.benchmark = False
 
 
-def select_device(device='', apex=False, batch_size=None):
-    # device = 'cpu' or '0' or '0,1,2,3'
-    cpu_request = device.lower() == 'cpu'
-    if device and not cpu_request:  # if device requested other than 'cpu'
-        os.environ['CUDA_VISIBLE_DEVICES'] = device  # set environment variable
-        assert torch.cuda.is_available(), 'CUDA unavailable, invalid device %s requested' % device  # check availablity
+def select_device(device=None, apex=False):
+    if device == 'cpu':
+        pass
+    elif device:  # Set environment variable if device is specified
+        os.environ['CUDA_VISIBLE_DEVICES'] = device
 
-    cuda = False if cpu_request else torch.cuda.is_available()
+    # apex if mixed precision training https://github.com/NVIDIA/apex
+    cuda = False if device == 'cpu' else torch.cuda.is_available()
+    device = torch.device('cuda:0' if cuda else 'cpu')
+
+    if not cuda:
+        print('Using CPU')
     if cuda:
         c = 1024 ** 2  # bytes to MB
         ng = torch.cuda.device_count()
-        if ng > 1 and batch_size:  # check that batch_size is compatible with device_count
-            assert batch_size % ng == 0, 'batch-size %g not multiple of GPU count %g' % (batch_size, ng)
         x = [torch.cuda.get_device_properties(i) for i in range(ng)]
-        s = 'Using CUDA ' + ('Apex ' if apex else '')  # apex for mixed precision https://github.com/NVIDIA/apex
+        cuda_str = 'Using CUDA ' + ('Apex ' if apex else '')
         for i in range(0, ng):
             if i == 1:
-                s = ' ' * len(s)
+                # torch.cuda.set_device(0)  # OPTIONAL: Set GPU ID
+                cuda_str = ' ' * len(cuda_str)
             print("%sdevice%g _CudaDeviceProperties(name='%s', total_memory=%dMB)" %
-                  (s, i, x[i].name, x[i].total_memory / c))
-    else:
-        print('Using CPU')
+                  (cuda_str, i, x[i].name, x[i].total_memory / c))
 
     print('')  # skip a line
-    return torch.device('cuda:0' if cuda else 'cpu')
+    return device
 
 
 def fuse_conv_and_bn(conv, bn):

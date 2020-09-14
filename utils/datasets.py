@@ -262,7 +262,6 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
     def __init__(self, path, img_size=416, batch_size=16, augment=False, hyp=None, rect=False, image_weights=False,
                  cache_labels=False, cache_images=False):
         path = str(Path(path))  # os-agnostic  train.txt绝对路径
-        assert os.path.isfile(path), 'File not found %s. ' % path
         with open(path, 'r') as f:
             self.img_files = [x.replace('/', os.sep) for x in f.read().splitlines()  # os-agnostic 获取img文件的绝对路径list
                               if os.path.splitext(x)[-1].lower() in img_formats]
@@ -286,37 +285,37 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
         # Rectangular Training  https://github.com/ultralytics/yolov3/issues/232
         # 和inference一样,支持非squre训练(最好同步)
-        # if self.rect:
-        #     # Read image shapes
-        #     sp = path.replace('.txt', '.shapes')  # shapefile path
-        #     try:
-        #         with open(sp, 'r') as f:  # read existing shapefile
-        #             s = [x.split() for x in f.read().splitlines()]
-        #             assert len(s) == n, 'Shapefile out of sync'
-        #     except:
-        #         s = [exif_size(Image.open(f)) for f in tqdm(self.img_files, desc='Reading image shapes')]
-        #         np.savetxt(sp, s, fmt='%g')  # overwrites existing (if any)
+        if self.rect:
+            # Read image shapes
+            sp = 'data' + os.sep + path.replace('.txt', '.shapes').split(os.sep)[-1]  # shapefile path
+            try:
+                with open(sp, 'r') as f:  # read existing shapefile
+                    s = [x.split() for x in f.read().splitlines()]
+                    assert len(s) == n, 'Shapefile out of sync'
+            except:
+                s = [exif_size(Image.open(f)) for f in tqdm(self.img_files, desc='Reading image shapes')]
+                np.savetxt(sp, s, fmt='%g')  # overwrites existing (if any)
 
-        #     # Sort by aspect ratio
-        #     s = np.array(s, dtype=np.float64)
-        #     ar = s[:, 1] / s[:, 0]  # aspect ratio
-        #     i = ar.argsort()
-        #     self.img_files = [self.img_files[i] for i in i]
-        #     self.label_files = [self.label_files[i] for i in i]
-        #     self.shapes = s[i]
-        #     ar = ar[i]
+            # Sort by aspect ratio
+            s = np.array(s, dtype=np.float64)
+            ar = s[:, 1] / s[:, 0]  # aspect ratio
+            i = ar.argsort()
+            self.img_files = [self.img_files[i] for i in i]
+            self.label_files = [self.label_files[i] for i in i]
+            self.shapes = s[i]
+            ar = ar[i]
 
-        #     # Set training image shapes
-        #     shapes = [[1, 1]] * nb
-        #     for i in range(nb):
-        #         ari = ar[bi == i]
-        #         mini, maxi = ari.min(), ari.max()
-        #         if maxi < 1:
-        #             shapes[i] = [maxi, 1]
-        #         elif mini > 1:
-        #             shapes[i] = [1, 1 / mini]
+            # Set training image shapes
+            shapes = [[1, 1]] * nb
+            for i in range(nb):
+                ari = ar[bi == i]
+                mini, maxi = ari.min(), ari.max()
+                if maxi < 1:
+                    shapes[i] = [maxi, 1]
+                elif mini > 1:
+                    shapes[i] = [1, 1 / mini]
 
-        #     self.batch_shapes = np.ceil(np.array(shapes) * img_size / 32.).astype(np.int) * 32
+            self.batch_shapes = np.ceil(np.array(shapes) * img_size / 32.).astype(np.int) * 32
 
         # Preload labels (required for weighted CE training)
         self.imgs = [None] * n
@@ -326,7 +325,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             extract_bounding_boxes = False
             create_datasubset = False
             pbar = tqdm(self.label_files, desc='Reading labels')    # tqdm对象,后面加载label时可以生成进度
-            nm, nf, ne, ns, nd = 0, 0, 0, 0, 0  # number missing, found, empty, datasubset, duplicate
+            nm, nf, ne, ns = 0, 0, 0, 0  # number missing, number found, number empty, number datasubset
             for i, file in enumerate(pbar):
                 try:
                     with open(file, 'r') as f:
@@ -342,8 +341,6 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                     assert (l[:, 1:-1] >= 0).all(), 'negative labels: %s' % file
                     assert (l[:, 1:-1] <= 1).all(), 'non-normalized or out of bounds coordinate labels: %s' % file
                     assert (l[:, 5] < math.pi/2).all() and (l[:, 5] > -math.pi/2).all(), 'out of angle bounds (-0.5pi,0.5pi)'
-                    if np.unique(l, axis=0).shape[0] < l.shape[0]:  # duplicate rows
-                        nd += 1  # print('WARNING: duplicate rows in %s' % self.label_files[i])  # duplicate rows                    
                     self.labels[i] = l
                     nf += 1  # file found
 
@@ -373,20 +370,22 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                             ret_val = cv2.imwrite(f, img[int(b[1] * h):int(b[3] * h), int(b[0] * w):int(b[2] * w)])
                             assert ret_val, 'Failure extracting classifier boxes'
                 else:
-                    ne += 1  # file empty  # print('empty labels for image %s' % self.img_files[i])
+                    ne += 1  # file empty
 
-                pbar.desc = 'Caching labels (%g found, %g missing, %g empty, %g duplicate, for %g images)' % (
-                    nf, nm, ne, nd, n)
+                pbar.desc = 'Reading labels (%g found, %g missing, %g empty for %g images)' % (nf, nm, ne, n)
             assert nf > 0, 'No labels found. Recommend correcting image and label paths.'
-       
-        # Cache images into memory for faster training (WARNING: Large datasets may exceed system RAM)
-        if cache_images:  # if training
-            gb = 0  # Gigabytes of cached images
-            pbar = tqdm(range(len(self.img_files)), desc='Caching images')
-            for i in pbar:  # max 10k images
-                self.imgs[i] = load_image(self, i)
-                gb += self.imgs[i].nbytes
-                pbar.desc = 'Caching images (%.1fGB)' % (gb / 1E9)
+
+        # Cache images into memory for faster training (~5GB)
+        if cache_images and augment:  # if training
+            for i in tqdm(range(min(len(self.img_files), 10000)), desc='Reading images'):  # max 10k images
+                img_path = self.img_files[i]
+                img = cv2.imread(img_path)  # BGR
+                assert img is not None, 'Image Not Found ' + img_path
+                r = self.img_size / max(img.shape)  # size ratio
+                if self.augment and r < 1:  # if training (NOT testing), downsize to inference shape
+                    h, w, _ = img.shape
+                    img = cv2.resize(img, (int(w * r), int(h * r)), interpolation=cv2.INTER_LINEAR)  # or INTER_AREA
+                self.imgs[i] = img
 
         # Detect corrupted images https://medium.com/joelthchao/programmatically-detect-corrupted-image-8c1b2006c3d3
         detect_corrupted_images = False

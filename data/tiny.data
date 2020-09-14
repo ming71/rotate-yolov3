@@ -1,6 +1,0 @@
-classes=1
-train=/py/rotated-yolo/data/tiny/train.txt
-valid=/py/rotated-yolo/data/tiny/train.txt
-names=data/hrsc.name
-backup=backup/
-eval=coco
