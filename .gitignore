@@ -1,41 +1,4 @@
 *.pt
 *.pth
 
-__pycache__/
-*.py[cod]
 
-/backup/
-/data/HRSC+/
-/data/ICDAR/
-/data/tiny/
-/detections/
-/experiment/
-/model/layer/DCNv2/build/
-/model/layer/ORN/build/
-/output/
-/runs/
-/weights/
-/utils/kmeans/
-/utils/nms/build/
-utils/nms/r_nms.egg-info/
-
-
-# C extensions
-*.so
-*.o
-
-# Distribution / packaging
-.Python
-build/
-lib/
-lib64/
-
-
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# custom
-*.pkl
-*.pkl.json
-*.log.json
