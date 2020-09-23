@@ -46,4 +46,4 @@ Following questions are frequently mentioned. And if you have something unclear,
   I will upload the complete executable code as soon as I return to school in September (if lucky).
 
 ## In the end
-There is no need or time to maintain the codebase to reproduce the previous performance. If you are interested in this work, you are welcome to fix the bugs in this codebase. If there is a need, models trained with good performance last year are available. I'll reimplement the rotation yolov4 or yolov5 if time permitting  in the future.
+There is no need or time to maintain the codebase to reproduce the previous performance. If you are interested in this work, you are welcome to fix the bugs in this codebase, and the trained models are available [here](https://pan.baidu.com/s/1EXhyGSiuUIPnkZ7cwpfCbQ) with extracted code `5noq` . I'll reimplement the rotation yolov4 or yolov5 if time permitting  in the future.
