@@ -2,6 +2,10 @@
 
 Rotaion object detection implemented with yolov3.
 
+---
+
+Hello, the no-program [ryolov3](https://github.com/ming71/yolov3-polygon) is available now. Although not so many tricks are attached like this repo, it still achieves good results, and is friendly for beginners to learn, have a good luck.
+
 ## Update
 
 The latest code has been uploaded, unfortunately, due to my negligence, I incorrectly modified some parts of the code and did not save the historical version last year, which made it hard to reproduce the previous high performance. It is tentatively that there are some problems in the loss calculation part. 
